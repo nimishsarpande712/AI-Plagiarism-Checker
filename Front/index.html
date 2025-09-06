@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plagiarism Checker</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+    <!-- Add Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Add Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>Plagiarism Checker</h1>
+        <div class="input-section">
+            <textarea id="textInput" placeholder="Paste your text here or upload a file..."></textarea>
+            <div class="upload-section">
+                <label for="fileInput" class="upload-label">
+                    <img src="assets/upload-icon.svg" alt="Upload" class="upload-icon">
+                    <span>Upload File</span>
+                </label>
+                <input type="file" id="fileInput" accept=".txt,.docx,.pdf" hidden>
+                <p id="uploadStatus" class="upload-status"></p>
+            </div>
+            <button onclick="checkPlagiarism()">Analyze Text</button>
+        </div>
+        <div class="spline-container">
+            <iframe src="https://my.spline.design/dunes-e5udKuZ4pYQhrEugeAVGiDkE/" 
+                    frameborder="0" 
+                    width="100%" 
+                    height="100%">
+            </iframe>
+        </div>
+        <div id="result" class="result-section">
+            <h2>Results</h2>
+            <div class="result-item">
+                <strong>Similarity Score:</strong>
+                <span id="score"></span>
+            </div>
+            <div class="result-item">
+                <strong>Analysis:</strong>
+                <span id="analysis"></span>
+            </div>
+            <div class="result-item">
+                <strong>Perplexity:</strong>
+                <span id="perplexity"></span>
+            </div>
+            <div class="result-item">
+                <strong>Burstiness:</strong>
+                <span id="burstiness"></span>
+            </div>
+            <div class="result-item">
+                <strong>Word Frequency:</strong>
+                <div id="wordFrequencyPlot"></div>
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
