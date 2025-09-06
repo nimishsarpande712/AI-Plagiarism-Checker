@@ -4,7 +4,7 @@
 
 A sophisticated web application designed to analyze text for potential AI generation and plagiarism. This tool provides detailed metrics and a clear verdict, making it useful for educators, writers, and content creators.
 
-![Screenshot of the application UI](https://via.placeholder.com/800x400.png?text=Application+UI+Screenshot)
+
 
 
 ---
