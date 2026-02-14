@@ -337,9 +337,31 @@ textarea:focus { outline: none; }
 }
 
 .chart-card { grid-column: 1 / -1; }
+.gauge-card { }
+.radar-card { }
 .suggestion-card { grid-column: 1 / -1; }
 
-.panel-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.chart-plotly {
+    min-height: 340px;
+    width: 100%;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+/* Plotly modebar styling */
+.chart-plotly .modebar {
+    top: 4px !important;
+    right: 4px !important;
+}
+.chart-plotly .modebar-btn {
+    font-size: 16px !important;
+}
+.chart-plotly .modebar-group {
+    background: rgba(240, 223, 192, 0.85) !important;
+    border-radius: 8px !important;
+    border: 2px solid var(--border) !important;
+    padding: 2px 4px !important;
+}
 .risk-badge {
     padding: 6px 12px;
     border: 3px solid var(--border);
@@ -420,14 +442,8 @@ textarea:focus { outline: none; }
 }
 
 .chart-card .chart {
-    min-height: 320px;
+    min-height: 340px;
 }
-
-.c3 svg { font-family: 'Space Grotesk', 'Segoe UI', sans-serif; }
-.c3-axis-x text { font-size: 0.8rem; }
-.c3-axis-y text { font-size: 0.85rem; }
-.c3-bar { stroke: var(--border); stroke-width: 2px; }
-.c3-grid line { stroke: #b8a67d; }
 
 .suggestion-list { display: grid; gap: 10px; }
 .suggestion-item {

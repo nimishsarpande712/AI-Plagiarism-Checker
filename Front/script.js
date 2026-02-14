@@ -27,11 +27,12 @@ const ui = {
     monospaceToggle: document.getElementById('monospaceToggle'),
     splineContainer: document.getElementById('splineContainer'),
     freqChart: document.getElementById('freqChart'),
+    gaugeChart: document.getElementById('gaugeChart'),
+    radarChart: document.getElementById('radarChart'),
     suggestionList: document.getElementById('suggestionList')
 };
 
 let splineLoaded = false;
-let freqChartInstance = null;
 let lastAnalyzedText = '';
 
 function setLoading(isLoading) {
@@ -339,6 +340,8 @@ function updateResults(result) {
     ui.entropy.textContent = result.entropy ? formatNumber(result.entropy, 3) : '—';
 
     renderForensics(result);
+    renderGaugeChart(aiProbability);
+    renderRadarChart(result);
     renderFrequencyChart(result.streamlit?.word_frequency);
     renderSuggestions(result.streamlit?.word_frequency);
     clearError();
@@ -364,42 +367,222 @@ function copyMetricsToClipboard() {
     navigator.clipboard?.writeText(text).catch(() => {});
 }
 
+/* ─── Plotly shared config ─── */
+const PLOTLY_THEME = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    font: { family: "'Space Grotesk', 'Segoe UI', sans-serif", color: '#1a1a1a', size: 13 },
+    margin: { t: 30, r: 20, b: 60, l: 50 },
+};
+
+const PLOTLY_CONFIG = {
+    displayModeBar: true,
+    modeBarButtonsToAdd: ['lasso2d', 'select2d'],
+    modeBarButtonsToRemove: ['sendDataToCloud'],
+    displaylogo: false,
+    responsive: true,
+    scrollZoom: true,
+    toImageButtonOptions: {
+        format: 'png',
+        filename: 'ai-plagiarism-chart',
+        height: 600,
+        width: 900,
+        scale: 2
+    }
+};
+
+/* Color palette matching the retro theme */
+const COLORS = {
+    bar: '#f4a261',
+    barHover: '#e76f51',
+    accent: '#2a9d8f',
+    danger: '#e76f51',
+    warning: '#e9c46a',
+    success: '#2a9d8f',
+    gridline: 'rgba(184, 166, 125, 0.4)',
+    radarFill: 'rgba(244, 162, 97, 0.3)',
+    radarLine: '#e76f51',
+};
+
+/* ─── AI Gauge Chart ─── */
+function renderGaugeChart(aiProbability) {
+    if (!ui.gaugeChart) return;
+
+    const gaugeColor = aiProbability >= 70 ? COLORS.danger
+        : aiProbability >= 40 ? COLORS.warning
+        : COLORS.success;
+
+    const data = [{
+        type: 'indicator',
+        mode: 'gauge+number+delta',
+        value: aiProbability,
+        number: {
+            suffix: '%',
+            font: { size: 48, family: "'JetBrains Mono', monospace", color: '#1a1a1a' }
+        },
+        gauge: {
+            axis: {
+                range: [0, 100],
+                tickwidth: 2,
+                tickcolor: '#1a1a1a',
+                tickfont: { size: 11, family: "'Space Grotesk', sans-serif" },
+                dtick: 20,
+            },
+            bar: { color: gaugeColor, thickness: 0.75 },
+            bgcolor: '#e8d8b7',
+            borderwidth: 3,
+            bordercolor: '#1a1a1a',
+            steps: [
+                { range: [0, 30], color: 'rgba(42, 157, 143, 0.15)' },
+                { range: [30, 60], color: 'rgba(233, 196, 106, 0.2)' },
+                { range: [60, 100], color: 'rgba(231, 111, 81, 0.15)' },
+            ],
+            threshold: {
+                line: { color: '#1a1a1a', width: 3 },
+                thickness: 0.8,
+                value: aiProbability,
+            }
+        }
+    }];
+
+    const layout = {
+        ...PLOTLY_THEME,
+        height: 280,
+        margin: { t: 20, r: 30, b: 10, l: 30 },
+        annotations: [{
+            text: aiProbability >= 70 ? 'HIGH RISK' : aiProbability >= 40 ? 'MEDIUM RISK' : 'LOW RISK',
+            x: 0.5, y: -0.05,
+            showarrow: false,
+            font: { size: 14, color: gaugeColor, family: "'Space Grotesk', sans-serif", weight: 700 }
+        }]
+    };
+
+    Plotly.newPlot(ui.gaugeChart, data, layout, { ...PLOTLY_CONFIG, displayModeBar: false });
+}
+
+/* ─── Signal Radar Chart ─── */
+function renderRadarChart(result) {
+    if (!ui.radarChart) return;
+
+    const signals = result.analysis?.signals || {};
+    const contributions = signals.contributions || {};
+
+    const categories = [
+        'Burstiness', 'Sent. Variability', 'Vocab Diversity',
+        'Repetition', 'Perplexity', 'Punct. Pattern', 'Bigram Repeat'
+    ];
+    const keys = [
+        'low_burstiness', 'low_sent_var', 'low_ttr',
+        'high_repetition', 'low_perplexity', 'low_punct_ratio', 'repeat_bigrams'
+    ];
+
+    const values = keys.map(k => clamp(Math.round((contributions[k] || 0) * 100), 0, 100));
+    // Close the polygon
+    const radarValues = [...values, values[0]];
+    const radarCats = [...categories, categories[0]];
+
+    const data = [{
+        type: 'scatterpolar',
+        r: radarValues,
+        theta: radarCats,
+        fill: 'toself',
+        fillcolor: COLORS.radarFill,
+        line: { color: COLORS.radarLine, width: 3 },
+        marker: { size: 7, color: COLORS.radarLine, symbol: 'diamond' },
+        name: 'AI Signals',
+        hovertemplate: '<b>%{theta}</b><br>Signal: %{r}%<extra></extra>',
+    }];
+
+    const layout = {
+        ...PLOTLY_THEME,
+        height: 340,
+        margin: { t: 40, r: 60, b: 40, l: 60 },
+        polar: {
+            bgcolor: 'rgba(232, 216, 183, 0.3)',
+            radialaxis: {
+                visible: true,
+                range: [0, 100],
+                ticksuffix: '%',
+                tickfont: { size: 10 },
+                gridcolor: COLORS.gridline,
+                linecolor: '#1a1a1a',
+            },
+            angularaxis: {
+                tickfont: { size: 11, family: "'Space Grotesk', sans-serif" },
+                gridcolor: COLORS.gridline,
+                linecolor: '#1a1a1a',
+                linewidth: 2,
+            }
+        },
+        showlegend: false,
+    };
+
+    Plotly.newPlot(ui.radarChart, data, layout, PLOTLY_CONFIG);
+}
+
+/* ─── Word Frequency Bar Chart (Plotly) ─── */
 function renderFrequencyChart(freqData) {
     if (!ui.freqChart) return;
-    ui.freqChart.innerHTML = '';
 
-    const hasData = freqData && Array.isArray(freqData.words) && Array.isArray(freqData.counts) && freqData.words.length && freqData.counts.length;
+    const hasData = freqData && Array.isArray(freqData.words) && Array.isArray(freqData.counts)
+        && freqData.words.length && freqData.counts.length;
     if (!hasData) {
-        ui.freqChart.textContent = 'No frequency data available';
-        if (freqChartInstance) {
-            freqChartInstance.destroy();
-            freqChartInstance = null;
-        }
+        ui.freqChart.innerHTML = '<p style="text-align:center;padding:40px;color:#3a2d20;">No frequency data available</p>';
         return;
     }
 
-    if (freqChartInstance) {
-        freqChartInstance.destroy();
-        freqChartInstance = null;
-    }
-
-    freqChartInstance = c3.generate({
-        bindto: ui.freqChart,
-        data: {
-            columns: [ ['Frequency', ...freqData.counts] ],
-            type: 'bar'
-        },
-        axis: {
-            x: {
-                type: 'category',
-                categories: freqData.words,
-                tick: { rotate: 45, multiline: false }
-            },
-            y: { label: 'Count' }
-        },
-        bar: { width: { ratio: 0.6 } },
-        padding: { right: 20 }
+    // Generate gradient colors for bars
+    const maxCount = Math.max(...freqData.counts);
+    const barColors = freqData.counts.map(c => {
+        const ratio = c / maxCount;
+        if (ratio > 0.7) return COLORS.danger;
+        if (ratio > 0.4) return COLORS.warning;
+        return COLORS.accent;
     });
+
+    const data = [{
+        type: 'bar',
+        x: freqData.words,
+        y: freqData.counts,
+        marker: {
+            color: barColors,
+            line: { color: '#1a1a1a', width: 2 },
+            cornerradius: 6,
+        },
+        hovertemplate: '<b>%{x}</b><br>Count: %{y}<extra></extra>',
+        hoverlabel: {
+            bgcolor: '#f0dfc0',
+            bordercolor: '#1a1a1a',
+            font: { family: "'Space Grotesk', sans-serif", color: '#1a1a1a', size: 14 }
+        },
+        textposition: 'outside',
+        text: freqData.counts.map(String),
+        textfont: { family: "'JetBrains Mono', monospace", size: 12, color: '#1a1a1a' },
+    }];
+
+    const layout = {
+        ...PLOTLY_THEME,
+        height: 380,
+        xaxis: {
+            tickangle: -35,
+            tickfont: { size: 12, family: "'Space Grotesk', sans-serif" },
+            gridcolor: 'transparent',
+            linecolor: '#1a1a1a',
+            linewidth: 2,
+        },
+        yaxis: {
+            title: { text: 'Count', font: { size: 13 } },
+            gridcolor: COLORS.gridline,
+            linecolor: '#1a1a1a',
+            linewidth: 2,
+            zeroline: false,
+        },
+        dragmode: 'zoom',
+        selectdirection: 'h',
+        bargap: 0.25,
+    };
+
+    Plotly.newPlot(ui.freqChart, data, layout, PLOTLY_CONFIG);
 }
 
 function renderSuggestions(freqData) {

@@ -15,7 +15,6 @@ import time
 # Heavy imports - these will be imported when models are loaded
 transformers = None
 torch = None
-tf = None
 sklearn = None
 # Import nltk at the top level since we need it for initialization
 import nltk
@@ -34,25 +33,26 @@ logger = logging.getLogger(__name__)
 # Global variables for lazy loading
 tokenizer = None
 model = None
-style_classifier = None
 vectorizer = None
-content_analyzer = None
-tf_sentence_model = None  # TensorFlow-based sentence encoder for semantic similarity
 models_loaded = False
 _models_loading = False
 _models_lock = threading.Lock()
-
-# Import nltk at the top level since we need it for initialization
-import nltk
+_stopwords_cache = None  # Cache stopwords to avoid repeated corpus access
 
 # Download required NLTK resources with robust error handling
 def download_nltk_resources():
     """Download NLTK resources with proper error handling"""
-    resources = ['punkt', 'punkt_tab', 'stopwords', 'averaged_perceptron_tagger']
+    # Map resources to their correct NLTK data paths
+    resource_paths = {
+        'punkt': 'tokenizers/punkt',
+        'punkt_tab': 'tokenizers/punkt_tab',
+        'stopwords': 'corpora/stopwords',
+        'averaged_perceptron_tagger': 'taggers/averaged_perceptron_tagger',
+    }
     
-    for resource in resources:
+    for resource, path in resource_paths.items():
         try:
-            nltk.data.find(f'tokenizers/{resource}')  # Check if resource exists
+            nltk.data.find(path)
             logger.info(f"Resource {resource} already downloaded")
         except LookupError:
             try:
@@ -104,8 +104,8 @@ def serve_static(path):
 # Lazy loading function for models
 def load_models():
     """Load ML models only when needed"""
-    global tokenizer, model, style_classifier, vectorizer, content_analyzer, tf_sentence_model, models_loaded
-    global transformers, torch, tf, sklearn, _models_loading
+    global tokenizer, model, vectorizer, models_loaded
+    global transformers, torch, sklearn, _models_loading
 
     # Fast-path
     if models_loaded:
@@ -130,28 +130,26 @@ def load_models():
             # Import heavy libraries here
             import transformers as hf_transformers
             import torch as pt
-            import tensorflow as tf_lib
             from sklearn.feature_extraction.text import TfidfVectorizer
-            from sklearn.ensemble import RandomForestClassifier
             # Bind to globals
             transformers = hf_transformers
             torch = pt
-            tf = tf_lib
 
-            # nltk is already imported at the top level
             # Download NLTK resources
             download_nltk_resources()
 
-            # Initialize vectorizer and lightweight classifier always (no network)
+            # Cache stopwords after download
+            _cache_stopwords()
+
+            # Initialize TF-IDF vectorizer for text analysis
             vectorizer = TfidfVectorizer(
                 max_features=5000,
                 strip_accents='unicode',
                 ngram_range=(1, 3),
                 stop_words='english'
             )
-            content_analyzer = RandomForestClassifier()
 
-            # Try to load transformers models; if unavailable, fall back gracefully
+            # Load GPT-2 for perplexity calculation (the core of AI detection)
             try:
                 tokenizer = transformers.AutoTokenizer.from_pretrained(
                     "gpt2",
@@ -161,35 +159,11 @@ def load_models():
                     "gpt2",
                 )
                 model.eval()
+                logger.info("GPT-2 model loaded successfully for perplexity analysis")
             except Exception as e:
                 logger.warning(f"Falling back: could not load GPT-2 model/tokenizer ({e})")
                 tokenizer = None
                 model = None
-
-            # TensorFlow-based sentence encoder for semantic similarity (plagiarism + readability)
-            try:
-                tf_sentence_model = tf_lib.keras.Sequential([
-                    tf_lib.keras.layers.TextVectorization(
-                        max_tokens=10000,
-                        output_mode='tf_idf',
-                    ),
-                ])
-                logger.info("TF sentence similarity layer initialized")
-            except Exception as e:
-                logger.warning(f"TF sentence model init failed ({e})")
-                tf_sentence_model = None
-
-            # Style classifier (optional) — uses TensorFlow backend via Hugging Face
-            try:
-                style_classifier = transformers.pipeline(
-                    "text-classification",
-                    model="distilbert-base-uncased",
-                    framework="pt",
-                    device=-1,
-                )
-            except Exception as e:
-                logger.warning(f"Falling back: could not initialize style classifier ({e})")
-                style_classifier = None
 
             models_loaded = True
             logger.info("Models loaded successfully")
@@ -197,17 +171,37 @@ def load_models():
 
         except Exception as e:
             logger.error(f"Error loading models: {e}")
-            # Even on failure, mark as loaded to use fallbacks and avoid tight loops
             models_loaded = True
             tokenizer = None
             model = None
-            style_classifier = None
             return True
         finally:
             _models_loading = False
 
+
+def _cache_stopwords():
+    """Cache NLTK stopwords to avoid repeated corpus loading issues."""
+    global _stopwords_cache
+    if _stopwords_cache is not None:
+        return
+    try:
+        from nltk.corpus import stopwords
+        _stopwords_cache = set(stopwords.words('english'))
+        logger.info(f"Cached {len(_stopwords_cache)} stopwords")
+    except Exception as e:
+        logger.warning(f"Could not cache stopwords: {e}")
+        _stopwords_cache = set()
+
+
+def _get_stopwords():
+    """Get cached stopwords (safe to call repeatedly)."""
+    global _stopwords_cache
+    if _stopwords_cache is None:
+        _cache_stopwords()
+    return _stopwords_cache if _stopwords_cache else set()
+
 def preprocess_text(text):
-    """Preprocess text with better error handling"""
+    """Preprocess text with robust error handling using cached stopwords."""
     if not text:
         return []
         
@@ -217,16 +211,7 @@ def preprocess_text(text):
             logger.error("Failed to load models for text preprocessing")
             return []
             
-        # Import NLTK functions locally
         from nltk.tokenize import word_tokenize
-        from nltk.corpus import stopwords
-        
-        # First ensure resources are available
-        import nltk
-        try:
-            nltk.data.find('tokenizers/punkt')
-        except LookupError:
-            download_nltk_resources()
             
         # Tokenize with error catching
         try:
@@ -235,26 +220,22 @@ def preprocess_text(text):
             logger.warning(f"word_tokenize failed, falling back to basic split: {str(e)}")
             tokens = text.lower().split()
             
-        # Get stopwords with error catching
-        try:
-            stop_words = set(stopwords.words('english'))
-        except Exception as e:
-            logger.warning(f"stopwords failed, using empty set: {str(e)}")
-            stop_words = set()
+        # Use cached stopwords (avoids corpus reload bugs)
+        stop_words = _get_stopwords()
             
         tokens = [token for token in tokens 
                  if token not in stop_words 
                  and token not in string.punctuation
+                 and len(token) > 1
                  and token.strip()]
         return tokens
         
     except Exception as e:
         logger.error(f"Text preprocessing error: {str(e)}")
-        # Return empty list instead of raising to allow graceful fallback
         return []
 
 def get_perplexity_and_burstiness(text):
-    """Improved perplexity and burstiness calculation"""
+    """Calculate perplexity using GPT-2 and burstiness from token frequency distribution."""
     try:
         if not text or len(text.strip()) < 10:
             raise ValueError("Text too short for analysis")
@@ -263,55 +244,59 @@ def get_perplexity_and_burstiness(text):
         if not load_models():
             raise RuntimeError("Failed to load ML models")
 
-        # Import required libraries locally
         import torch
         from nltk.probability import FreqDist
 
-        # Compute burstiness first (token-based and robust)
+        # --- Burstiness ---
         tokens = preprocess_text(text)
         word_freq = FreqDist(tokens)
         counts = list(word_freq.values())
 
-        # Default burstiness if not enough data
         if len(counts) < 2:
             burstiness = 0.0
         else:
-            mean = sum(counts) / len(counts)
-            variance = sum((c - mean) ** 2 for c in counts) / len(counts)
-            burstiness = (variance / (mean + 1e-8) - 1) / (variance / (mean + 1e-8) + 1)
+            mean_c = sum(counts) / len(counts)
+            variance_c = sum((c - mean_c) ** 2 for c in counts) / len(counts)
+            # Fano factor-based burstiness: maps to (-1, 1), negative = regular, positive = bursty
+            fano = variance_c / (mean_c + 1e-8)
+            burstiness = (fano - 1) / (fano + 1)
 
-        # Try transformer-based perplexity when possible (PyTorch + GPT-2)
+        # --- Perplexity (GPT-2 based) ---
         perplexity = None
         if tokenizer is not None and model is not None:
             try:
-                inputs = tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
-                input_ids = inputs.get('input_ids')
-                if input_ids is not None and input_ids.numel() > 1:
-                    stride = 512
-                    nlls = []
-                    for i in range(0, input_ids.size(1), stride):
-                        begin_loc = max(i + stride - input_ids.size(1), 0)
-                        end_loc = min(i + stride, input_ids.size(1))
-                        target_ids = input_ids[:, begin_loc:end_loc].contiguous()
-                        with torch.no_grad():
-                            outputs = model(target_ids)
-                            logits = getattr(outputs, 'logits', None)
-                            if logits is None or logits.size(-1) == 0:
-                                raise RuntimeError("Model logits have invalid shape")
-                            shift_logits = logits[..., :-1, :].contiguous()
-                            shift_labels = target_ids[..., 1:].contiguous()
-                            loss = torch.nn.functional.cross_entropy(
-                                shift_logits.view(-1, shift_logits.size(-1)),
-                                shift_labels.view(-1),
-                                reduction='mean'
-                            )
-                            nlls.append(loss)
-                    if nlls:
-                        perplexity = torch.exp(torch.stack(nlls).mean()).item()
-            except Exception as e:
-                logger.warning(f"Perplexity (transformer) failed, using fallback: {e}")
+                encodings = tokenizer(text, return_tensors='pt', truncation=False)
+                input_ids = encodings['input_ids']
+                seq_len = input_ids.size(1)
+                max_length = 1024  # GPT-2 context window
+                stride = 512
 
-        # Fallback perplexity: simple add-one smoothed unigram model
+                nlls = []
+                prev_end = 0
+                for begin_loc in range(0, seq_len, stride):
+                    end_loc = min(begin_loc + max_length, seq_len)
+                    trg_len = end_loc - prev_end  # only score the new tokens
+                    input_chunk = input_ids[:, begin_loc:end_loc]
+
+                    target_ids = input_chunk.clone()
+                    # Mask tokens we've already scored (overlap region)
+                    target_ids[:, :-trg_len] = -100
+
+                    with torch.no_grad():
+                        outputs = model(input_chunk, labels=target_ids)
+                        neg_log_likelihood = outputs.loss
+                        nlls.append(neg_log_likelihood)
+
+                    prev_end = end_loc
+                    if end_loc == seq_len:
+                        break
+
+                if nlls:
+                    perplexity = torch.exp(torch.stack(nlls).mean()).item()
+            except Exception as e:
+                logger.warning(f"GPT-2 perplexity failed, using fallback: {e}")
+
+        # Fallback: simple add-one smoothed unigram model
         if perplexity is None:
             if not tokens:
                 perplexity = 100.0
@@ -498,21 +483,25 @@ def check_plagiarism(text1, text2):
             logger.error("Failed to load models for plagiarism check")
             return 0, []
             
-        # Import required libraries locally
         from nltk.tokenize import sent_tokenize
-        from sklearn.metrics.pairwise import cosine_similarity
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
         import nltk
         
-        # Normalize texts
-        text1 = ' '.join(preprocess_text(text1))
-        text2 = ' '.join(preprocess_text(text2))
-        
-        # Get sentence pairs
+        # Get sentence pairs from original texts (not preprocessed)
         sentences1 = sent_tokenize(text1)
         sentences2 = sent_tokenize(text2)
         
         if not sentences1 or not sentences2:
             return 0, []
+        
+        # Use a local vectorizer to avoid contaminating the global one
+        local_vec = TfidfVectorizer(
+            max_features=5000,
+            strip_accents='unicode',
+            ngram_range=(1, 2),
+            stop_words='english'
+        )
             
         # Calculate similarity matrix
         similarity_matrix = []
@@ -521,26 +510,30 @@ def check_plagiarism(text1, text2):
         for sent1 in sentences1:
             sent_similarities = []
             for sent2 in sentences2:
-                # Use both TF-IDF and n-gram overlap
-                vectors = vectorizer.fit_transform([sent1, sent2])
-                tfidf_sim = cosine_similarity(vectors)[0][1]
+                # TF-IDF cosine similarity
+                try:
+                    vectors = local_vec.fit_transform([sent1, sent2])
+                    tfidf_sim = sklearn_cosine(vectors[0:1], vectors[1:2])[0][0]
+                except Exception:
+                    tfidf_sim = 0.0
                 
-                # N-gram overlap
-                n = 3  # trigrams
-                sent1_ngrams = set(nltk.ngrams(sent1.lower().split(), n))
-                sent2_ngrams = set(nltk.ngrams(sent2.lower().split(), n))
+                # N-gram overlap (Jaccard on trigrams)
+                n = 3
+                words1 = sent1.lower().split()
+                words2 = sent2.lower().split()
+                sent1_ngrams = set(nltk.ngrams(words1, n)) if len(words1) >= n else set()
+                sent2_ngrams = set(nltk.ngrams(words2, n)) if len(words2) >= n else set()
                 
                 if sent1_ngrams and sent2_ngrams:
                     ngram_sim = len(sent1_ngrams & sent2_ngrams) / len(sent1_ngrams | sent2_ngrams)
                 else:
-                    ngram_sim = 0
+                    ngram_sim = 0.0
                     
-                # Combined similarity score (sklearn TF-IDF + n-gram + TF cosine)
-                tf_cos_sim = calculate_tf_cosine_similarity(sent1, sent2)
-                similarity = (tfidf_sim + ngram_sim + tf_cos_sim) / 3
+                # Combined similarity (weighted average)
+                similarity = 0.6 * tfidf_sim + 0.4 * ngram_sim
                 sent_similarities.append(similarity)
                 
-                if similarity > 0.5:  # Lower threshold for better detection
+                if similarity > 0.5:
                     similar_sentences.append({
                         'text': sent1,
                         'similarity': round(similarity * 100, 2)
@@ -580,6 +573,9 @@ def check():
         if len(text) < 50:  # Minimum length requirement
             return jsonify({"error": "Text too short for analysis"}), 400
 
+        import time as _time
+        start_time = _time.time()
+
         # Get metrics
         perplexity, burstiness = get_perplexity_and_burstiness(text)
         
@@ -599,6 +595,18 @@ def check():
         # Add style consistency analysis
         style_consistency = analyze_text_style(text)
         
+        # Calculate entropy from token distribution
+        tokens = preprocess_text(text)
+        token_counts = Counter(tokens)
+        total_tokens = len(tokens)
+        if total_tokens > 0:
+            probs = np.array(list(token_counts.values())) / total_tokens
+            entropy = float(-np.sum(probs * np.log2(probs + 1e-12)))
+        else:
+            entropy = 0.0
+
+        inference_time = _time.time() - start_time
+        
         # Enhanced metrics
         metrics = {
             "perplexity": perplexity,
@@ -606,7 +614,11 @@ def check():
             "style_consistency": style_consistency,
             "complexity": calculate_complexity(text),
             "variability": calculate_variability(text),
-            "readability": calculate_readability_tf(text)
+            "readability": calculate_readability(text),
+            "entropy": entropy,
+            "token_count": total_tokens,
+            "model_name": "GPT-2 + Heuristics" if (tokenizer is not None and model is not None) else "Heuristics (fallback)",
+            "inference_time": round(inference_time, 3),
         }
         
         return jsonify({
@@ -771,19 +783,14 @@ def streamlit_analysis():
         # Get metrics using existing functions
         perplexity, burstiness = get_perplexity_and_burstiness(text)
         
-        # Get word frequency data
+        # Get word frequency data using cached stopwords
         tokens = text.split()
-        
-        # Import stopwords locally
-        if load_models():
-            from nltk.corpus import stopwords
-            stop_words = set(stopwords.words('english'))
-        else:
-            stop_words = set()
+        stop_words = _get_stopwords()
             
         tokens = [token.lower() for token in tokens 
                  if token.lower() not in stop_words 
-                 and token.lower() not in string.punctuation]
+                 and token.lower() not in string.punctuation
+                 and len(token) > 1]
 
         word_counts = Counter(tokens)
         top_words = word_counts.most_common(10)
@@ -804,114 +811,150 @@ def streamlit_analysis():
         return jsonify({"error": str(e)}), 500
 
 def analyze_text_style(text):
-    """Analyze text style consistency"""
+    """Analyze text style consistency using sentence-level statistical analysis.
+    
+    Measures how consistent the writing style is across the text by analyzing:
+    - Sentence length distribution uniformity
+    - Punctuation usage patterns
+    - Vocabulary consistency across chunks
+    Returns a score in [0, 1] where higher = more consistent style (more AI-like).
+    """
     try:
-        # If ML classifier is available, use it; otherwise heuristic fallback
-        if load_models() and style_classifier is not None:
-            chunks = [text[i:i+512] for i in range(0, len(text), 512)]
-            style_scores = []
-            for chunk in chunks:
-                result = style_classifier(chunk)
-                style_scores.append(result[0]['score'])
-            return float(np.mean(style_scores)) if style_scores else 0.5
+        from nltk.tokenize import sent_tokenize
+        
+        sentences = sent_tokenize(text)
+        if len(sentences) < 3:
+            return 0.5  # Not enough data
+        
+        # 1. Sentence length consistency (low variance = more AI-like)
+        lengths = [len(s.split()) for s in sentences if s.strip()]
+        if not lengths or len(lengths) < 2:
+            return 0.5
+        mean_len = np.mean(lengths)
+        cv = np.std(lengths) / (mean_len + 1e-8)  # coefficient of variation
+        length_consistency = max(0.0, 1.0 - cv)  # Lower cv = higher consistency
+        
+        # 2. Punctuation pattern consistency across halves of text
+        mid = len(text) // 2
+        half1, half2 = text[:mid], text[mid:]
+        punct_chars = set('.,;:!?-()[]{}')
+        
+        def punct_profile(t):
+            total = max(len(t), 1)
+            return {ch: t.count(ch) / total for ch in punct_chars}
+        
+        p1, p2 = punct_profile(half1), punct_profile(half2)
+        punct_diff = sum(abs(p1.get(ch, 0) - p2.get(ch, 0)) for ch in punct_chars)
+        punct_consistency = max(0.0, 1.0 - punct_diff * 50)  # Scale to [0, 1]
+        
+        # 3. Vocabulary overlap between first and second half
+        tokens1 = set(half1.lower().split())
+        tokens2 = set(half2.lower().split())
+        if tokens1 and tokens2:
+            jaccard = len(tokens1 & tokens2) / len(tokens1 | tokens2)
         else:
-            # Heuristic: more varied punctuation and sentence length => higher consistency proxy
-            sentences = text.split('.')
-            lengths = [len(s.split()) for s in sentences if s.strip()]
-            if not lengths:
-                return 0.5
-            length_std = np.std(lengths)
-            punct_ratio = sum(ch in '.,;:!?"\'' for ch in text) / max(len(text), 1)
-            score = 1.0 / (1.0 + np.exp(- (0.5 * length_std + 50 * punct_ratio - 2)))
-            return float(score)
+            jaccard = 0.5
+        
+        # Weighted combination
+        score = 0.4 * length_consistency + 0.3 * punct_consistency + 0.3 * jaccard
+        return float(np.clip(score, 0.0, 1.0))
+        
     except Exception as e:
         logger.error(f"Style analysis error: {str(e)}")
         return 0.5
 
+
 def calculate_complexity(text):
-    """Estimate text complexity based on sentence length and word rarity"""
+    """Estimate text complexity using proven linguistic metrics.
+    
+    Combines average word length, sentence length, and type-token ratio
+    into a normalized complexity score.
+    """
     try:
-        # Ensure models are loaded
-        if not load_models():
-            logger.error("Failed to load models for complexity calculation")
-            return 0.0
-            
-        # Import required libraries locally
         from nltk.tokenize import sent_tokenize, word_tokenize
         
         sentences = sent_tokenize(text)
-        if not sentences:
+        words = [w for w in word_tokenize(text) if w.isalpha()]
+        
+        if not sentences or not words:
             return 0.0
         
-        # Average length of words in sentences
-        avg_word_length = np.mean([len(word) for word in word_tokenize(text)])
+        n_words = len(words)
+        n_sentences = len(sentences)
         
-        # Rarity based on inverse document frequency (IDF)
-        tfidf = vectorizer.fit_transform(sentences)
-        idf_values = tfidf.idf_
-        rarity = np.mean(idf_values[idf_values > 0])  # Ignore zero IDF values
+        # Average word length (longer words = more complex)
+        avg_word_len = np.mean([len(w) for w in words])
         
-        # Combine metrics for complexity
-        complexity = np.log2(len(sentences)) * np.log2(avg_word_length) * np.log2(rarity + 1)
+        # Average sentence length (longer sentences = more complex)
+        avg_sent_len = n_words / max(n_sentences, 1)
         
-        return float(complexity)
+        # Type-token ratio (higher = more diverse vocabulary = more complex)
+        ttr = len(set(w.lower() for w in words)) / max(n_words, 1)
+        
+        # Normalize: typical ranges: word_len 3-8, sent_len 5-40, ttr 0.3-0.8
+        word_len_score = np.clip((avg_word_len - 3) / 5, 0, 1)
+        sent_len_score = np.clip((avg_sent_len - 5) / 35, 0, 1)
+        ttr_score = np.clip((ttr - 0.3) / 0.5, 0, 1)
+        
+        complexity = 0.35 * word_len_score + 0.35 * sent_len_score + 0.3 * ttr_score
+        return float(np.clip(complexity, 0.0, 1.0))
+        
     except Exception as e:
         logger.error(f"Complexity calculation error: {str(e)}")
         return 0.0
 
+
 def calculate_variability(text):
-    """Estimate text variability based on word diversity and sentence structure"""
+    """Estimate text variability based on word diversity and sentence structure variation."""
     try:
-        # Ensure models are loaded
-        if not load_models():
-            logger.error("Failed to load models for variability calculation")
-            return 0.0
-            
-        # Import required libraries locally
         from nltk.tokenize import sent_tokenize, word_tokenize
         
         sentences = sent_tokenize(text)
-        if not sentences:
+        words = [w for w in word_tokenize(text) if w.isalpha()]
+        
+        if not sentences or len(sentences) < 2 or not words:
             return 0.0
         
-        # Unique words divided by total words
-        word_diversity = len(set(word_tokenize(text))) / len(word_tokenize(text))
+        # Type-token ratio
+        unique_words = set(w.lower() for w in words)
+        ttr = len(unique_words) / max(len(words), 1)
         
-        # Variability in sentence length
-        sentence_lengths = [len(sentence.split()) for sentence in sentences]
-        length_variability = np.std(sentence_lengths) / np.mean(sentence_lengths)
+        # Coefficient of variation in sentence length
+        sent_lengths = [len(s.split()) for s in sentences]
+        mean_len = np.mean(sent_lengths)
+        cv = np.std(sent_lengths) / (mean_len + 1e-8)
         
-        # Combine metrics for variability
-        variability = word_diversity * length_variability
+        # Combine: higher TTR + higher CV = more variable text
+        variability = 0.5 * ttr + 0.5 * min(cv, 1.0)
+        return float(np.clip(variability, 0.0, 1.0))
         
-        return float(variability)
     except Exception as e:
         logger.error(f"Variability calculation error: {str(e)}")
         return 0.0
 
-def calculate_readability_tf(text):
-    """Calculate readability score using TensorFlow/Keras.
+
+def calculate_readability(text):
+    """Calculate readability using the Flesch Reading Ease formula.
     
-    Uses a small Keras model to produce a normalized readability index
-    based on sentence length, word length, and syllable estimation.
-    Returns a score in [0, 1] where higher = more readable.
+    Flesch RE = 206.835 - 1.015 * (words/sentences) - 84.6 * (syllables/words)
+    Returns a normalized score in [0, 1] where higher = more readable.
     """
     try:
-        import tensorflow as tf
         from nltk.tokenize import sent_tokenize, word_tokenize
 
-        words = word_tokenize(text)
+        words = [w for w in word_tokenize(text) if w.isalpha()]
         sentences = sent_tokenize(text)
+        
         if not words or not sentences:
             return 0.5
 
         n_words = len(words)
         n_sentences = len(sentences)
-        n_chars = sum(len(w) for w in words)
 
-        # Estimate syllables per word (simple vowel-group heuristic)
         def count_syllables(word):
-            vowels = 'aeiouAEIOU'
+            """Count syllables using vowel-group heuristic."""
+            word = word.lower()
+            vowels = 'aeiou'
             count = 0
             prev_vowel = False
             for ch in word:
@@ -919,103 +962,49 @@ def calculate_readability_tf(text):
                 if is_vowel and not prev_vowel:
                     count += 1
                 prev_vowel = is_vowel
+            # Handle silent 'e'
+            if word.endswith('e') and count > 1:
+                count -= 1
             return max(count, 1)
 
         n_syllables = sum(count_syllables(w) for w in words)
 
-        # Build feature vector: [avg_word_len, avg_sent_len, avg_syllables_per_word, words_per_sentence_std]
-        avg_word_len = n_chars / max(n_words, 1)
-        avg_sent_len = n_words / max(n_sentences, 1)
-        avg_syl = n_syllables / max(n_words, 1)
-        sent_lens = [len(s.split()) for s in sentences]
-        sent_std = float(np.std(sent_lens)) if len(sent_lens) > 1 else 0.0
-
-        features = tf.constant([[avg_word_len, avg_sent_len, avg_syl, sent_std]], dtype=tf.float32)
-
-        # Small Keras model with fixed expert weights (no training needed)
-        # Maps readability features -> [0,1] score
-        readability_model = tf.keras.Sequential([
-            tf.keras.layers.Dense(8, activation='relu', input_shape=(4,)),
-            tf.keras.layers.Dense(4, activation='relu'),
-            tf.keras.layers.Dense(1, activation='sigmoid')
-        ])
-
-        # Set expert-tuned weights so the model produces meaningful scores out-of-the-box
-        # Layer 0: Dense(4->8)
-        w0 = np.array([
-            [-0.3,  0.2,  0.1, -0.1,  0.15, -0.2,  0.25,  0.1],
-            [ 0.05, -0.15, 0.2,  0.1, -0.05,  0.1, -0.1,   0.15],
-            [-0.2,  0.1, -0.3,  0.2,  0.1,  -0.15,  0.05,  0.2],
-            [ 0.1, -0.1,  0.05, 0.15, -0.2,   0.1,  0.2,  -0.05]
-        ], dtype=np.float32)
-        b0 = np.zeros(8, dtype=np.float32)
-        # Layer 1: Dense(8->4)
-        w1 = np.array([
-            [ 0.2, -0.1,  0.15,  0.1],
-            [-0.15, 0.2, -0.1,   0.05],
-            [ 0.1,  0.15, 0.2,  -0.1],
-            [-0.1,  0.1,  0.05,  0.2],
-            [ 0.15,-0.05, 0.1,  -0.15],
-            [ 0.05, 0.2, -0.15,  0.1],
-            [-0.1,  0.1,  0.2,   0.05],
-            [ 0.2, -0.15, 0.1,   0.15]
-        ], dtype=np.float32)
-        b1 = np.zeros(4, dtype=np.float32)
-        # Layer 2: Dense(4->1)
-        w2 = np.array([[0.3], [-0.2], [0.25], [-0.15]], dtype=np.float32)
-        b2 = np.array([0.5], dtype=np.float32)  # bias toward 0.5 (neutral)
-
-        readability_model.layers[0].set_weights([w0, b0])
-        readability_model.layers[1].set_weights([w1, b1])
-        readability_model.layers[2].set_weights([w2, b2])
-
-        score = readability_model(features).numpy().item()
-        return float(np.clip(score, 0.0, 1.0))
+        # Flesch Reading Ease formula
+        flesch = 206.835 - 1.015 * (n_words / max(n_sentences, 1)) - 84.6 * (n_syllables / max(n_words, 1))
+        
+        # Normalize to [0, 1] (Flesch typically ranges from 0-100, can go outside)
+        normalized = np.clip(flesch / 100.0, 0.0, 1.0)
+        return float(normalized)
 
     except Exception as e:
-        logger.error(f"TF readability calculation error: {str(e)}")
+        logger.error(f"Readability calculation error: {str(e)}")
         return 0.5
 
-def calculate_tf_cosine_similarity(text1, text2):
-    """Compute cosine similarity between two texts using TensorFlow.
-    
-    Uses tf.keras TextVectorization to create TF-IDF-like vectors,
-    then computes cosine similarity via TensorFlow ops.
+
+def calculate_cosine_similarity(text1, text2):
+    """Compute cosine similarity between two texts using sklearn TF-IDF.
     Returns a similarity score in [0, 1].
     """
     try:
-        import tensorflow as tf
-
-        # Tokenize and build vocabulary
-        all_words = set(text1.lower().split() + text2.lower().split())
-        vocab = sorted(all_words)
-        word_to_idx = {w: i for i, w in enumerate(vocab)}
-        vocab_size = len(vocab)
-
-        if vocab_size == 0:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+        
+        if not text1.strip() or not text2.strip():
             return 0.0
-
-        # Build count vectors using TF
-        def text_to_vector(text):
-            counts = np.zeros(vocab_size, dtype=np.float32)
-            for w in text.lower().split():
-                if w in word_to_idx:
-                    counts[word_to_idx[w]] += 1.0
-            return tf.constant(counts)
-
-        vec1 = text_to_vector(text1)
-        vec2 = text_to_vector(text2)
-
-        # Cosine similarity via TF ops
-        dot = tf.reduce_sum(vec1 * vec2)
-        norm1 = tf.sqrt(tf.reduce_sum(vec1 ** 2))
-        norm2 = tf.sqrt(tf.reduce_sum(vec2 ** 2))
-        similarity = (dot / (norm1 * norm2 + 1e-8)).numpy().item()
-
+        
+        # Use a fresh local vectorizer to avoid state contamination
+        local_vectorizer = TfidfVectorizer(
+            max_features=5000,
+            strip_accents='unicode',
+            ngram_range=(1, 2),
+            stop_words='english'
+        )
+        tfidf_matrix = local_vectorizer.fit_transform([text1, text2])
+        similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
         return float(np.clip(similarity, 0.0, 1.0))
 
     except Exception as e:
-        logger.error(f"TF cosine similarity error: {str(e)}")
+        logger.error(f"Cosine similarity error: {str(e)}")
         return 0.0
 
 if __name__ == '__main__':
