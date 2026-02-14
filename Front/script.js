@@ -395,17 +395,17 @@ const PLOTLY_CONFIG = {
     }
 };
 
-/* Color palette matching the retro theme */
+/* Color palette matching the Gitingest theme */
 const COLORS = {
-    bar: '#f4a261',
+    bar: '#f4845f',
     barHover: '#e76f51',
-    accent: '#2a9d8f',
+    accent: '#2dd4a8',
     danger: '#e76f51',
     warning: '#e9c46a',
-    success: '#2a9d8f',
-    gridline: 'rgba(184, 166, 125, 0.4)',
-    radarFill: 'rgba(244, 162, 97, 0.3)',
-    radarLine: '#e76f51',
+    success: '#2dd4a8',
+    gridline: 'rgba(184, 166, 125, 0.3)',
+    radarFill: 'rgba(244, 132, 95, 0.25)',
+    radarLine: '#f4845f',
 };
 
 /* ─── AI Gauge Chart ─── */
@@ -437,7 +437,7 @@ function renderGaugeChart(aiProbability) {
             borderwidth: 3,
             bordercolor: '#1a1a1a',
             steps: [
-                { range: [0, 30], color: 'rgba(42, 157, 143, 0.15)' },
+                { range: [0, 30], color: 'rgba(45, 212, 168, 0.15)' },
                 { range: [30, 60], color: 'rgba(233, 196, 106, 0.2)' },
                 { range: [60, 100], color: 'rgba(231, 111, 81, 0.15)' },
             ],
@@ -502,7 +502,7 @@ function renderRadarChart(result) {
         height: 340,
         margin: { t: 40, r: 60, b: 40, l: 60 },
         polar: {
-            bgcolor: 'rgba(232, 216, 183, 0.3)',
+            bgcolor: 'rgba(252, 236, 211, 0.3)',
             radialaxis: {
                 visible: true,
                 range: [0, 100],
