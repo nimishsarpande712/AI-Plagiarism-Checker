@@ -29,7 +29,10 @@ const ui = {
     freqChart: document.getElementById('freqChart'),
     gaugeChart: document.getElementById('gaugeChart'),
     radarChart: document.getElementById('radarChart'),
-    suggestionList: document.getElementById('suggestionList')
+    suggestionList: document.getElementById('suggestionList'),
+    heatmapContainer: document.getElementById('heatmapContainer'),
+    heatmapToggle: document.getElementById('heatmapToggle'),
+    heatmapCard: document.getElementById('heatmapCard')
 };
 
 let splineLoaded = false;
@@ -344,6 +347,7 @@ function updateResults(result) {
     renderRadarChart(result);
     renderFrequencyChart(result.streamlit?.word_frequency);
     renderSuggestions(result.streamlit?.word_frequency);
+    renderHeatmap(lastAnalyzedText);
     clearError();
 }
 
@@ -628,6 +632,79 @@ function renderSuggestions(freqData) {
     });
 }
 
+/* ─── Sentence AI Heatmap ─── */
+function heatmapColor(prob) {
+    // Green (human) → Yellow (uncertain) → Red (AI)
+    // 0.0 = #2a9d8f, 0.5 = #e9c46a, 1.0 = #e76f51
+    const stops = [
+        [0.0,  42, 157, 143],   // --success green
+        [0.25, 137, 194, 123],  // light green
+        [0.5,  233, 196, 106],  // --warning yellow
+        [0.75, 244, 162,  97],  // --accent orange
+        [1.0,  231, 111,  81],  // --danger red
+    ];
+    const p = Math.max(0, Math.min(1, prob));
+    let lo = stops[0], hi = stops[stops.length - 1];
+    for (let i = 0; i < stops.length - 1; i++) {
+        if (p >= stops[i][0] && p <= stops[i + 1][0]) {
+            lo = stops[i];
+            hi = stops[i + 1];
+            break;
+        }
+    }
+    const t = (hi[0] - lo[0]) > 0 ? (p - lo[0]) / (hi[0] - lo[0]) : 0;
+    const r = Math.round(lo[1] + t * (hi[1] - lo[1]));
+    const g = Math.round(lo[2] + t * (hi[2] - lo[2]));
+    const b = Math.round(lo[3] + t * (hi[3] - lo[3]));
+    return `rgba(${r}, ${g}, ${b}, 0.35)`;
+}
+
+async function renderHeatmap(text) {
+    if (!ui.heatmapContainer) return;
+    ui.heatmapContainer.innerHTML = '<p class="heatmap-placeholder">Analyzing sentences…</p>';
+
+    if (!text || text.trim().length < 20) {
+        ui.heatmapContainer.innerHTML = '<p class="heatmap-placeholder">Text too short for sentence analysis.</p>';
+        return;
+    }
+
+    try {
+        const response = await fetchWithRetry('http://localhost:5000/sentence-analysis', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ text }),
+            mode: 'cors'
+        });
+
+        const data = await response.json();
+        if (!response.ok || !data.sentences || !data.sentences.length) {
+            ui.heatmapContainer.innerHTML = '<p class="heatmap-placeholder">Could not analyze sentences.</p>';
+            return;
+        }
+
+        ui.heatmapContainer.innerHTML = '';
+        data.sentences.forEach((s, idx) => {
+            const span = document.createElement('span');
+            span.className = 'heatmap-span';
+            span.style.backgroundColor = heatmapColor(s.probability);
+            span.textContent = s.text + ' ';
+
+            // Tooltip
+            const tip = document.createElement('span');
+            tip.className = 'heatmap-tooltip';
+            const pct = Math.round(s.probability * 100);
+            const pplText = s.perplexity != null ? ` · PPL ${s.perplexity}` : '';
+            tip.textContent = `AI: ${pct}%${pplText}`;
+            span.appendChild(tip);
+
+            ui.heatmapContainer.appendChild(span);
+        });
+    } catch (err) {
+        console.error('Heatmap error:', err);
+        ui.heatmapContainer.innerHTML = '<p class="heatmap-placeholder">Heatmap unavailable.</p>';
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     updateCharCount();
 
@@ -635,6 +712,16 @@ document.addEventListener('DOMContentLoaded', () => {
     ui.analyzeBtn.addEventListener('click', checkPlagiarism);
     ui.retryBtn.addEventListener('click', checkPlagiarism);
     ui.copyMetrics.addEventListener('click', copyMetricsToClipboard);
+
+    // Heatmap toggle
+    if (ui.heatmapToggle && ui.heatmapContainer) {
+        ui.heatmapToggle.addEventListener('click', () => {
+            const isActive = ui.heatmapToggle.getAttribute('aria-pressed') === 'true';
+            ui.heatmapToggle.setAttribute('aria-pressed', String(!isActive));
+            ui.heatmapContainer.classList.toggle('collapsed', isActive);
+            ui.heatmapToggle.querySelector('.toggle-icon').textContent = isActive ? '○' : '◉';
+        });
+    }
 
     ui.fileInput.addEventListener('change', e => {
         const file = e.target.files[0];

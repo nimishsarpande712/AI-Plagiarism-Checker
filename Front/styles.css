@@ -482,6 +482,111 @@ textarea:focus { outline: none; }
     font-weight: 600;
 }
 
+/* ─── Sentence AI Heatmap ─── */
+.heatmap-card { grid-column: 1 / -1; }
+
+.heatmap-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.heatmap-toggle {
+    border: 3px solid var(--border);
+    border-radius: 10px;
+    padding: 6px 14px;
+    background: var(--accent);
+    color: var(--text);
+    font-weight: 700;
+    font-size: 0.85rem;
+    cursor: pointer;
+    box-shadow: 3px 3px 0 var(--border);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: transform 0.15s ease, background 0.2s ease;
+}
+.heatmap-toggle:hover { transform: translateY(-2px); }
+.heatmap-toggle[aria-pressed="false"] {
+    background: #e6d3ab;
+}
+.heatmap-toggle .toggle-icon { font-size: 1rem; }
+
+.heatmap-legend {
+    margin: 10px 0 14px;
+}
+.legend-bar {
+    height: 10px;
+    border: 3px solid var(--border);
+    border-radius: 8px;
+    background: linear-gradient(to right, #2a9d8f, #89c27b, #e9c46a, #f4a261, #e76f51);
+}
+.legend-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin-top: 4px;
+    color: #3a2d20;
+}
+
+.heatmap-container {
+    line-height: 2;
+    font-size: 1.02rem;
+    padding: 14px;
+    border: 3px solid var(--border);
+    border-radius: 10px;
+    background: #f7ead2;
+    max-height: 420px;
+    overflow-y: auto;
+}
+
+.heatmap-container.collapsed {
+    display: none;
+}
+
+.heatmap-placeholder {
+    text-align: center;
+    padding: 24px;
+    color: #3a2d20;
+    font-weight: 600;
+}
+
+.heatmap-span {
+    display: inline;
+    padding: 3px 5px;
+    border-radius: 6px;
+    border: 2px solid rgba(26, 26, 26, 0.15);
+    margin: 2px 1px;
+    cursor: default;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    position: relative;
+}
+.heatmap-span:hover {
+    border-color: var(--border);
+    box-shadow: 2px 2px 0 var(--border);
+    z-index: 2;
+}
+
+.heatmap-tooltip {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--panel);
+    border: 3px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    white-space: nowrap;
+    box-shadow: var(--shadow);
+    z-index: 100;
+    pointer-events: none;
+}
+.heatmap-span:hover .heatmap-tooltip { display: block; }
+
 .hidden { display: none !important; }
 
 @media (max-width: 720px) {

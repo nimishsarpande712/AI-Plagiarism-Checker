@@ -142,6 +142,29 @@
                     <div class="forensic-list" id="forensicList"></div>
                 </article>
 
+                <article class="panel heatmap-card" id="heatmapCard">
+                    <div class="panel-title">
+                        <p class="eyebrow">Sentence AI Heatmap</p>
+                        <div class="heatmap-controls">
+                            <span class="panel-help">Color-coded by AI probability</span>
+                            <button class="heatmap-toggle" id="heatmapToggle" type="button" aria-pressed="true">
+                                <span class="toggle-icon">◉</span> Heatmap
+                            </button>
+                        </div>
+                    </div>
+                    <div class="heatmap-legend">
+                        <div class="legend-bar"></div>
+                        <div class="legend-labels">
+                            <span>Human-likely</span>
+                            <span>Uncertain</span>
+                            <span>AI-likely</span>
+                        </div>
+                    </div>
+                    <div id="heatmapContainer" class="heatmap-container">
+                        <p class="heatmap-placeholder">Analyzing sentences…</p>
+                    </div>
+                </article>
+
                 <article class="panel chart-card">
                     <div class="panel-title">
                         <p class="eyebrow">Word Frequency</p>

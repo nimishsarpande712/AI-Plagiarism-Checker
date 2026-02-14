@@ -981,6 +981,104 @@ def calculate_readability(text):
         return 0.5
 
 
+@app.route('/sentence-analysis', methods=['POST', 'OPTIONS'])
+def sentence_analysis():
+    """Compute per-sentence AI probability for heatmap visualization.
+
+    Runs GPT-2 on each sentence to get its perplexity, then maps to a
+    probability in [0, 1] where higher = more likely AI-generated.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'POST')
+        return response
+
+    try:
+        data = request.get_json()
+        if not data or 'text' not in data:
+            return jsonify({"error": "No text provided"}), 400
+
+        text = data['text'].strip()
+        if len(text) < 20:
+            return jsonify({"error": "Text too short for sentence analysis"}), 400
+
+        if not load_models():
+            return jsonify({"error": "Models not loaded"}), 500
+
+        from nltk.tokenize import sent_tokenize
+        sentences = [s.strip() for s in sent_tokenize(text) if s.strip()]
+
+        if not sentences:
+            return jsonify({"error": "No sentences found"}), 400
+
+        results = []
+
+        if tokenizer is not None and model is not None:
+            import torch as _torch
+
+            for sent in sentences:
+                try:
+                    encodings = tokenizer(sent, return_tensors='pt', truncation=True, max_length=1024)
+                    input_ids = encodings['input_ids']
+
+                    if input_ids.size(1) < 3:
+                        # Too short for meaningful perplexity
+                        results.append({"text": sent, "probability": 0.30, "perplexity": None})
+                        continue
+
+                    with _torch.no_grad():
+                        outputs = model(input_ids, labels=input_ids)
+                        loss = outputs.loss.item()
+
+                    ppl = float(np.exp(min(loss, 20)))  # cap to avoid inf
+
+                    # Map perplexity to AI probability (lower ppl = higher prob)
+                    if ppl < 20:
+                        prob = 0.90 + 0.05 * max(0, (20 - ppl) / 20)
+                    elif ppl < 40:
+                        prob = 0.70 + 0.20 * (40 - ppl) / 20
+                    elif ppl < 60:
+                        prob = 0.45 + 0.25 * (60 - ppl) / 20
+                    elif ppl < 100:
+                        prob = 0.22 + 0.23 * (100 - ppl) / 40
+                    elif ppl < 200:
+                        prob = 0.08 + 0.14 * (200 - ppl) / 100
+                    else:
+                        prob = 0.05
+
+                    results.append({
+                        "text": sent,
+                        "probability": round(float(np.clip(prob, 0.0, 1.0)), 3),
+                        "perplexity": round(ppl, 2),
+                    })
+                except Exception as exc:
+                    logger.warning(f"Sentence perplexity failed for '{sent[:40]}...': {exc}")
+                    results.append({"text": sent, "probability": 0.30, "perplexity": None})
+        else:
+            # Heuristic fallback when GPT-2 is unavailable
+            for sent in sentences:
+                words = sent.split()
+                n = len(words)
+                avg_wl = sum(len(w) for w in words) / max(n, 1)
+                unique_ratio = len(set(w.lower() for w in words)) / max(n, 1)
+                prob = 0.25
+                if avg_wl > 5.5:
+                    prob += 0.10
+                if unique_ratio < 0.55:
+                    prob += 0.15
+                if n > 25:
+                    prob += 0.10
+                results.append({"text": sent, "probability": round(min(prob, 0.95), 3), "perplexity": None})
+
+        return jsonify({"sentences": results})
+
+    except Exception as e:
+        logger.error(f"Sentence analysis error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 def calculate_cosine_similarity(text1, text2):
     """Compute cosine similarity between two texts using sklearn TF-IDF.
     Returns a similarity score in [0, 1].
