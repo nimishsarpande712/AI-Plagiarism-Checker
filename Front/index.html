@@ -3,62 +3,154 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Plagiarism Checker</title>
-    <link rel="stylesheet" href="styles.css">
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+    <title>AI Plagiarism Engine</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <!-- Add Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- Add Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://unpkg.com/c3@0.7.20/c3.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/d3@5.16.0/dist/d3.min.js"></script>
+    <script src="https://unpkg.com/c3@0.7.20/c3.min.js"></script>
 </head>
 <body>
-    <div class="container">
-        <h1>Plagiarism Checker</h1>
-        <div class="input-section">
-            <textarea id="textInput" placeholder="Paste your text here or upload a file..."></textarea>
-            <div class="upload-section">
-                <label for="fileInput" class="upload-label">
-                    <img src="assets/upload-icon.svg" alt="Upload" class="upload-icon">
-                    <span>Upload File</span>
-                </label>
-                <input type="file" id="fileInput" accept=".txt,.docx,.pdf" hidden>
-                <p id="uploadStatus" class="upload-status"></p>
+    <div class="page-shell">
+        <header class="nav">
+            <div class="nav-left">
+                <div class="logo">AI Plagiarism Engine</div>
+                <span class="nav-badge">Perplexity + Burstiness Model</span>
             </div>
-            <button onclick="checkPlagiarism()">Analyze Text</button>
-        </div>
-        <div class="spline-container">
-            <iframe src="https://my.spline.design/dunes-e5udKuZ4pYQhrEugeAVGiDkE/" 
-                    frameborder="0" 
-                    width="100%" 
-                    height="100%">
-            </iframe>
-        </div>
-        <div id="result" class="result-section">
-            <h2>Results</h2>
-            <div class="result-item">
-                <strong>Similarity Score:</strong>
-                <span id="score"></span>
+            <div class="nav-right">
+                <div class="status" id="modelStatus" aria-live="polite">
+                    <span class="status-dot active"></span>
+                    <span class="status-text">Model Active</span>
+                </div>
+                <button class="icon-button" type="button" aria-label="Settings">
+                    <span class="icon-gear"></span>
+                </button>
             </div>
-            <div class="result-item">
-                <strong>Analysis:</strong>
-                <span id="analysis"></span>
-            </div>
-            <div class="result-item">
-                <strong>Perplexity:</strong>
-                <span id="perplexity"></span>
-            </div>
-            <div class="result-item">
-                <strong>Burstiness:</strong>
-                <span id="burstiness"></span>
-            </div>
-            <div class="result-item">
-                <strong>Word Frequency:</strong>
-                <div id="wordFrequencyPlot"></div>
-            </div>
-        </div>
+        </header>
+
+        <main class="main">
+            <section id="input-panel" class="panel panel-main">
+                <div class="panel-header">
+                    <div>
+                        <p class="eyebrow">Secure inference workspace</p>
+                        <h1>Plagiarism Checker</h1>
+                        <p class="lede">Paste text or upload a document to evaluate AI authorship likelihood.</p>
+                    </div>
+                    <label class="monospace-toggle">
+                        <input type="checkbox" id="monospaceToggle" aria-label="Toggle monospace input">
+                        <span class="toggle-shape"></span>
+                        <span class="toggle-label">Monospace</span>
+                    </label>
+                </div>
+
+                <div class="textarea-wrap">
+                    <textarea id="textInput" placeholder="Paste text here or drop a file" aria-label="Text to analyze"></textarea>
+                    <div class="textarea-meta">
+                        <span id="charCounter">0 characters</span>
+                        <span id="uploadStatus" class="upload-status" aria-live="polite"></span>
+                    </div>
+                </div>
+
+                <div class="controls">
+                    <label for="fileInput" class="upload-button">
+                        <span class="upload-icon" aria-hidden="true"></span>
+                        <span>Upload File</span>
+                    </label>
+                    <input type="file" id="fileInput" accept=".txt,.docx,.pdf" hidden>
+                    <button id="analyzeBtn" class="primary" type="button">Analyze</button>
+                </div>
+            </section>
+
+            <section id="loader" class="loader hidden" aria-live="polite" aria-busy="false">
+                <div class="loader-card">
+                    <div class="spline-shell" id="splineContainer"></div>
+                    <div class="loader-copy">
+                        <p class="eyebrow">Inference running</p>
+                        <p class="loader-text">Evaluating perplexity, burstiness, and semantic drift...</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="errorCard" class="panel error-card hidden" role="alert">
+                <div class="error-stripe"></div>
+                <div>
+                    <p class="eyebrow">Issue detected</p>
+                    <p id="errorMessage" class="error-message">An error occurred</p>
+                </div>
+                <button id="retryBtn" class="secondary" type="button">Retry</button>
+            </section>
+
+            <section id="results" class="results-grid hidden" aria-live="polite">
+                <article class="panel verdict-card">
+                    <div class="panel-title">
+                        <p class="eyebrow">Verdict</p>
+                        <div class="risk-badge" id="riskBadge">Low Risk</div>
+                    </div>
+                    <div class="verdict-metrics">
+                        <div class="metric">
+                            <span>AI Probability</span>
+                            <strong id="aiProbability">0%</strong>
+                        </div>
+                        <div class="metric">
+                            <span>Human Probability</span>
+                            <strong id="humanProbability">0%</strong>
+                        </div>
+                        <div class="metric">
+                            <span>Confidence</span>
+                            <strong id="confidenceScore">0%</strong>
+                        </div>
+                    </div>
+                    <p id="verdictText" class="verdict-text">Awaiting analysis</p>
+                    <ul id="verdictReasons" class="verdict-reasons"></ul>
+                </article>
+
+                <article class="panel metrics-card">
+                    <div class="panel-title">
+                        <p class="eyebrow">Technical Metrics</p>
+                        <button class="icon-button" id="copyMetrics" type="button" aria-label="Copy metrics">⧉</button>
+                    </div>
+                    <div class="metrics-grid">
+                        <div class="metric-row"><span>Perplexity</span><strong id="perplexity">—</strong></div>
+                        <div class="metric-row"><span>Burstiness</span><strong id="burstiness">—</strong></div>
+                        <div class="metric-row"><span>Token Count</span><strong id="tokenCount">—</strong></div>
+                        <div class="metric-row"><span>Model</span><strong id="modelUsed">—</strong></div>
+                        <div class="metric-row"><span>Inference Time</span><strong id="inferenceTime">—</strong></div>
+                        <div class="metric-row"><span>Entropy</span><strong id="entropy">—</strong></div>
+                    </div>
+                </article>
+
+                <article class="panel forensic-card">
+                    <div class="panel-title">
+                        <p class="eyebrow">Text Forensics</p>
+                        <span class="panel-help">Paragraph consistency and predictability</span>
+                    </div>
+                    <div class="forensic-list" id="forensicList"></div>
+                </article>
+
+                <article class="panel chart-card">
+                    <div class="panel-title">
+                        <p class="eyebrow">Word Frequency</p>
+                        <span class="panel-help">Top tokens from analysis</span>
+                    </div>
+                    <div id="freqChart" class="chart"></div>
+                </article>
+
+                <article class="panel suggestion-card">
+                    <div class="panel-title">
+                        <p class="eyebrow">Replacement Suggestions</p>
+                        <span class="panel-help">Reduce repetition with alternatives</span>
+                    </div>
+                    <div id="suggestionList" class="suggestion-list"></div>
+                </article>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <span>Retro inference console · Perplexity + Burstiness + Entropy</span>
+        </footer>
     </div>
+
     <script src="script.js"></script>
 </body>
 </html>

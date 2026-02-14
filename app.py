@@ -48,7 +48,7 @@ import nltk
 # Download required NLTK resources with robust error handling
 def download_nltk_resources():
     """Download NLTK resources with proper error handling"""
-    resources = ['punkt', 'stopwords', 'averaged_perceptron_tagger']  # Remove punkt_tab, add tagger
+    resources = ['punkt', 'punkt_tab', 'stopwords', 'averaged_perceptron_tagger']
     
     for resource in resources:
         try:
