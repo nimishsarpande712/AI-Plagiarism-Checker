@@ -12,6 +12,13 @@ import string
 import threading
 import time
 
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
+# Database module
+import database as db
+
 # Heavy imports - these will be imported when models are loaded
 transformers = None
 torch = None
@@ -38,6 +45,23 @@ models_loaded = False
 _models_loading = False
 _models_lock = threading.Lock()
 _stopwords_cache = None  # Cache stopwords to avoid repeated corpus access
+
+# ─── Adaptive Model Learning ───
+# Stores running statistics from each analysis to improve detection thresholds
+_learning_stats = {
+    'total_analyses': 0,
+    'ai_detected_count': 0,
+    'perplexity_sum': 0.0,
+    'perplexity_sq_sum': 0.0,
+    'burstiness_sum': 0.0,
+    'burstiness_sq_sum': 0.0,
+    'ttr_sum': 0.0,
+    'cv_sum': 0.0,
+    'samples': [],  # Store last N analysis features for threshold adaptation
+    'max_samples': 200,
+    'threshold_adjustments': {},
+}
+_learning_lock = threading.Lock()
 
 # Download required NLTK resources with robust error handling
 def download_nltk_resources():
@@ -75,7 +99,7 @@ CORS(app, resources={
     r"/*": {
         "origins": ["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:5000", "http://127.0.0.1:5000"],
         "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+        "allow_headers": ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With", "X-Session-Id"],
         "expose_headers": ["Content-Type", "Authorization"],
         "supports_credentials": True,
         "max_age": 120
@@ -87,7 +111,7 @@ def after_request(response):
     origin = request.headers.get('Origin')
     if origin in ['http://localhost:8000', 'http://127.0.0.1:8000', 'http://localhost:5000', 'http://127.0.0.1:5000']:
         response.headers['Access-Control-Allow-Origin'] = origin
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,Accept,Origin,X-Requested-With'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,Accept,Origin,X-Requested-With,X-Session-Id'
     response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
     response.headers['Access-Control-Allow-Credentials'] = 'true'
     return response
@@ -257,9 +281,22 @@ def get_perplexity_and_burstiness(text):
         else:
             mean_c = sum(counts) / len(counts)
             variance_c = sum((c - mean_c) ** 2 for c in counts) / len(counts)
-            # Fano factor-based burstiness: maps to (-1, 1), negative = regular, positive = bursty
-            fano = variance_c / (mean_c + 1e-8)
-            burstiness = (fano - 1) / (fano + 1)
+            std_c = variance_c ** 0.5
+            # Burstiness index: (std - mean) / (std + mean)
+            # Ranges from -1 (perfectly regular) to 1 (very bursty)
+            # AI text tends to be closer to 0 or negative (more uniform distribution)
+            burstiness = (std_c - mean_c) / (std_c + mean_c + 1e-8)
+            
+            # Also compute sentence-level burstiness for better AI detection
+            from nltk.tokenize import sent_tokenize
+            sents = sent_tokenize(text)
+            if len(sents) >= 3:
+                sent_lens = [len(s.split()) for s in sents]
+                sent_mean = sum(sent_lens) / len(sent_lens)
+                sent_std = (sum((l - sent_mean) ** 2 for l in sent_lens) / len(sent_lens)) ** 0.5
+                sent_burstiness = (sent_std - sent_mean) / (sent_std + sent_mean + 1e-8)
+                # Blend word-level and sentence-level burstiness
+                burstiness = 0.6 * burstiness + 0.4 * sent_burstiness
 
         # --- Perplexity (GPT-2 based) ---
         perplexity = None
@@ -358,20 +395,20 @@ def _compute_text_signals(text, tokens, perplexity, burstiness):
 
         # Map to AI-like signals (0..1). Higher means more AI-like.
         signals = {
-            # Lower burstiness tends to be more AI-like
-            'low_burstiness': 1.0 if burstiness < 0.04 else (0.6 if burstiness < 0.08 else (0.3 if burstiness < 0.12 else 0.0)),
-            # Low sentence variability (cv) more AI-like
-            'low_sent_var': 1.0 if cv_len < 0.22 else (0.6 if cv_len < 0.3 else (0.3 if cv_len < 0.4 else 0.0)),
-            # Low vocab diversity more AI-like
-            'low_ttr': 1.0 if ttr < 0.35 else (0.6 if ttr < 0.45 else (0.3 if ttr < 0.55 else 0.0)),
+            # Lower burstiness tends to be more AI-like (widened thresholds)
+            'low_burstiness': 1.0 if burstiness < 0.08 else (0.7 if burstiness < 0.15 else (0.4 if burstiness < 0.25 else (0.15 if burstiness < 0.35 else 0.0))),
+            # Low sentence variability (cv) more AI-like (widened thresholds)
+            'low_sent_var': 1.0 if cv_len < 0.25 else (0.7 if cv_len < 0.35 else (0.4 if cv_len < 0.50 else (0.15 if cv_len < 0.65 else 0.0))),
+            # Low vocab diversity more AI-like (widened thresholds)
+            'low_ttr': 1.0 if ttr < 0.40 else (0.7 if ttr < 0.50 else (0.4 if ttr < 0.60 else (0.15 if ttr < 0.70 else 0.0))),
             # High repetition more AI-like
-            'high_repetition': 1.0 if top_word_ratio > 0.08 else (0.6 if top_word_ratio > 0.065 else (0.3 if top_word_ratio > 0.055 else 0.0)),
-            # Extremely low perplexity can be AI-like; use conservative thresholds
-            'low_perplexity': 1.0 if perplexity < 40 else (0.6 if perplexity < 55 else (0.3 if perplexity < 70 else 0.0)),
+            'high_repetition': 1.0 if top_word_ratio > 0.07 else (0.6 if top_word_ratio > 0.055 else (0.3 if top_word_ratio > 0.04 else 0.0)),
+            # Low perplexity is the STRONGEST AI signal — GPT-2 PPL below 60 is very suspicious
+            'low_perplexity': 1.0 if perplexity < 30 else (0.85 if perplexity < 45 else (0.65 if perplexity < 60 else (0.4 if perplexity < 80 else (0.15 if perplexity < 100 else 0.0)))),
             # Very low punctuation ratio can indicate template-like text
-            'low_punct_ratio': 1.0 if punct_ratio < 0.005 else (0.5 if punct_ratio < 0.01 else 0.0),
+            'low_punct_ratio': 1.0 if punct_ratio < 0.005 else (0.5 if punct_ratio < 0.015 else 0.0),
             # Repeated bigrams can indicate formulaic text
-            'repeat_bigrams': 1.0 if repeated_bigram_ratio > 0.06 else (0.5 if repeated_bigram_ratio > 0.04 else 0.0),
+            'repeat_bigrams': 1.0 if repeated_bigram_ratio > 0.05 else (0.5 if repeated_bigram_ratio > 0.03 else 0.0),
         }
 
         # Add raw metrics for transparency
@@ -410,8 +447,8 @@ def assess_ai_likelihood(text, perplexity, burstiness):
     tokens = preprocess_text(text)
 
     # Require sufficient length for a confident classification
-    min_tokens = 120  # ~80-120 words minimum
-    min_sentences = 4
+    min_tokens = 60  # ~40-60 words minimum
+    min_sentences = 3
 
     # Compute signals
     signals = _compute_text_signals(text, tokens, perplexity, burstiness)
@@ -419,15 +456,15 @@ def assess_ai_likelihood(text, perplexity, burstiness):
     n_tokens = signals.get('metrics', {}).get('n_tokens', len(tokens))
     n_sent = signals.get('metrics', {}).get('n_sentences', 0)
 
-    # Aggregate score with conservative weights
+    # Aggregate score — perplexity is the strongest AI signal from GPT-2
     weights = {
-        'low_burstiness': 0.22,
-        'low_sent_var': 0.22,
-        'low_ttr': 0.18,
-        'high_repetition': 0.18,
-        'low_perplexity': 0.12,
-        'low_punct_ratio': 0.04,
-        'repeat_bigrams': 0.04,
+        'low_perplexity': 0.35,   # GPT-2 perplexity is the most reliable signal
+        'low_burstiness': 0.15,
+        'low_sent_var': 0.15,
+        'low_ttr': 0.12,
+        'high_repetition': 0.10,
+        'low_punct_ratio': 0.05,
+        'repeat_bigrams': 0.08,
     }
 
     weighted = 0.0
@@ -442,38 +479,154 @@ def assess_ai_likelihood(text, perplexity, burstiness):
     ai_score = (weighted / total_w) if total_w else 0.0
 
     # Decision policy
-    strong_signals = sum(1 for v in contributions.values() if v >= 1.0)
-    medium_signals = sum(1 for v in contributions.values() if 0.5 <= v < 1.0)
+    strong_signals = sum(1 for v in contributions.values() if v >= 0.8)
+    medium_signals = sum(1 for v in contributions.values() if 0.4 <= v < 0.8)
 
     reasons = []
 
     # Base decision on score and count of strong signals
     is_long_enough = (n_tokens >= min_tokens and n_sent >= min_sentences)
 
+    # Check for perplexity override — very low PPL is an extremely strong AI indicator
+    perplexity_override = (perplexity < 45 and contributions.get('low_perplexity', 0) >= 0.85)
+
     if not is_long_enough:
-        # Too short for reliable decision; be conservative (lean human)
-        is_ai = False
-        confidence = 0.2 + 0.2 * ai_score  # Low confidence
-        reasons.append('Text too short for reliable detection; defaulting to human')
+        # Short text — still flag if perplexity is very low
+        if perplexity_override and n_tokens >= 30:
+            is_ai = True
+            confidence = min(1.0, 0.55 + 0.35 * ai_score)
+            reasons.append('Low perplexity strongly suggests AI despite short text')
+        else:
+            is_ai = False
+            confidence = 0.2 + 0.3 * ai_score
+            reasons.append('Text too short for reliable detection; defaulting to human')
     else:
-        # Require both a reasonably high score and multiple strong/medium agreements
-        is_ai = (ai_score >= 0.68 and (strong_signals >= 2 or (strong_signals >= 1 and medium_signals >= 2)))
-        # Confidence increases with score and agreement
-        confidence = min(1.0, 0.5 + 0.4 * ai_score + 0.05 * strong_signals + 0.03 * medium_signals)
+        # Primary decision: score-based with signal agreement
+        is_ai = (
+            ai_score >= 0.45  # Lowered from 0.68
+            and (strong_signals >= 1 or medium_signals >= 2)  # Relaxed agreement
+        )
+        # Perplexity override: if GPT-2 says it's very predictable, flag it
+        if not is_ai and perplexity_override:
+            is_ai = True
+            reasons.append('Perplexity override: text is highly predictable by GPT-2')
+        # Confidence scales with score and signal agreement
+        confidence = min(1.0, 0.3 + 0.5 * ai_score + 0.08 * strong_signals + 0.05 * medium_signals)
 
     # Add explanatory reasons
-    if contributions.get('low_burstiness', 0) >= 1.0:
-        reasons.append('Very low burstiness')
-    if contributions.get('low_sent_var', 0) >= 1.0:
+    if contributions.get('low_perplexity', 0) >= 0.65:
+        reasons.append('Low perplexity (text is highly predictable by GPT-2)')
+    if contributions.get('low_burstiness', 0) >= 0.7:
+        reasons.append('Very low burstiness (uniform word distribution)')
+    if contributions.get('low_sent_var', 0) >= 0.7:
         reasons.append('Low sentence length variability')
-    if contributions.get('low_ttr', 0) >= 1.0:
+    if contributions.get('low_ttr', 0) >= 0.7:
         reasons.append('Low vocabulary diversity')
-    if contributions.get('high_repetition', 0) >= 1.0:
+    if contributions.get('high_repetition', 0) >= 0.6:
         reasons.append('High repetition of common words')
-    if contributions.get('low_perplexity', 0) >= 1.0:
-        reasons.append('Very low perplexity')
+    if contributions.get('repeat_bigrams', 0) >= 0.5:
+        reasons.append('Repetitive phrase patterns')
+    if contributions.get('low_punct_ratio', 0) >= 0.5:
+        reasons.append('Unusually low punctuation usage')
 
     return is_ai, float(confidence), reasons, {'score': ai_score, 'contributions': contributions, **signals.get('metrics', {})}
+
+
+def _update_learning_stats(perplexity, burstiness, signals, is_ai):
+    """Update adaptive model statistics with each new analysis.
+    
+    This accumulates statistics from each analysis to refine detection
+    thresholds over time, making the model smarter with every file analyzed.
+    """
+    global _learning_stats
+    
+    with _learning_lock:
+        stats = _learning_stats
+        stats['total_analyses'] += 1
+        if is_ai:
+            stats['ai_detected_count'] += 1
+        
+        stats['perplexity_sum'] += perplexity
+        stats['perplexity_sq_sum'] += perplexity ** 2
+        stats['burstiness_sum'] += burstiness
+        stats['burstiness_sq_sum'] += burstiness ** 2
+        
+        metrics = signals.get('metrics', {})
+        stats['ttr_sum'] += metrics.get('ttr', 0)
+        stats['cv_sum'] += metrics.get('cv_sentence_length', 0)
+        
+        # Store sample features for threshold adaptation
+        sample = {
+            'perplexity': perplexity,
+            'burstiness': burstiness,
+            'ttr': metrics.get('ttr', 0),
+            'cv': metrics.get('cv_sentence_length', 0),
+            'is_ai': is_ai,
+        }
+        stats['samples'].append(sample)
+        if len(stats['samples']) > stats['max_samples']:
+            stats['samples'] = stats['samples'][-stats['max_samples']:]
+        
+        # Recalculate adaptive thresholds every 10 analyses
+        if stats['total_analyses'] % 10 == 0 and stats['total_analyses'] >= 20:
+            _recalculate_thresholds(stats)
+        
+        logger.info(f"Model learning updated: {stats['total_analyses']} total analyses, "
+                     f"{stats['ai_detected_count']} AI detected, "
+                     f"avg PPL: {stats['perplexity_sum']/stats['total_analyses']:.1f}")
+
+
+def _recalculate_thresholds(stats):
+    """Recalculate adaptive detection thresholds based on accumulated data."""
+    n = stats['total_analyses']
+    if n < 20:
+        return
+    
+    # Calculate running statistics
+    avg_ppl = stats['perplexity_sum'] / n
+    avg_burst = stats['burstiness_sum'] / n
+    avg_ttr = stats['ttr_sum'] / n
+    avg_cv = stats['cv_sum'] / n
+    
+    # Variance for perplexity
+    var_ppl = (stats['perplexity_sq_sum'] / n) - (avg_ppl ** 2)
+    std_ppl = max(var_ppl ** 0.5, 1.0)
+    
+    # Adaptive thresholds: use mean - 1 std as the "low" threshold
+    stats['threshold_adjustments'] = {
+        'perplexity_low': max(20, avg_ppl - std_ppl),
+        'perplexity_mid': max(35, avg_ppl - 0.5 * std_ppl),
+        'avg_burstiness': avg_burst,
+        'avg_ttr': avg_ttr,
+        'avg_cv': avg_cv,
+        'sample_count': n,
+    }
+    
+    logger.info(f"Adaptive thresholds updated: PPL_low={stats['threshold_adjustments']['perplexity_low']:.1f}, "
+                f"PPL_mid={stats['threshold_adjustments']['perplexity_mid']:.1f}, "
+                f"avg_burst={avg_burst:.4f}, samples={n}")
+
+
+def get_learning_stats():
+    """Get current model learning statistics."""
+    with _learning_lock:
+        stats = _learning_stats.copy()
+        n = stats['total_analyses']
+        if n > 0:
+            return {
+                'total_analyses': n,
+                'ai_detected_count': stats['ai_detected_count'],
+                'ai_detection_rate': round(stats['ai_detected_count'] / n * 100, 1),
+                'avg_perplexity': round(stats['perplexity_sum'] / n, 2),
+                'avg_burstiness': round(stats['burstiness_sum'] / n, 4),
+                'threshold_adjustments': stats.get('threshold_adjustments', {}),
+                'model_improved': n >= 20,
+            }
+        return {
+            'total_analyses': 0,
+            'model_improved': False,
+        }
+
 
 def check_plagiarism(text1, text2):
     """Enhanced plagiarism detection"""
@@ -560,11 +713,16 @@ def check():
     if request.method == 'OPTIONS':
         response = jsonify({})
         response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,X-Session-Id')
         response.headers.add('Access-Control-Allow-Methods', 'POST')
         return response
         
     try:
+        # Rate limiting
+        client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        if db.is_rate_limited(client_ip):
+            return jsonify({"error": "Rate limit exceeded. Please wait before trying again."}), 429
+
         data = request.get_json()
         if not data or 'text' not in data:
             return jsonify({"error": "No text provided"}), 400
@@ -584,8 +742,8 @@ def check():
 
         # Enhanced analysis text
         analysis = {
-            "perplexity_analysis": "Very low perplexity can indicate AI" if perplexity < 40 else ("Somewhat low perplexity" if perplexity < 55 else "Natural perplexity level"),
-            "burstiness_analysis": "Very low word variation" if burstiness < 0.04 else ("Somewhat low word variation" if burstiness < 0.08 else "Natural word variation"),
+            "perplexity_analysis": "Very low perplexity — strong AI indicator" if perplexity < 30 else ("Low perplexity — likely AI-generated" if perplexity < 50 else ("Moderate perplexity — possibly AI-assisted" if perplexity < 80 else "Natural perplexity level")),
+            "burstiness_analysis": "Very low word variation — AI-like uniformity" if burstiness < 0.08 else ("Low word variation" if burstiness < 0.15 else "Natural word variation"),
             "overall": "Likely AI-generated" if is_ai_generated else "Likely human-written",
             "confidence": confidence,
             "reasons": reasons,
@@ -620,12 +778,45 @@ def check():
             "model_name": "GPT-2 + Heuristics" if (tokenizer is not None and model is not None) else "Heuristics (fallback)",
             "inference_time": round(inference_time, 3),
         }
-        
-        return jsonify({
+
+        result_payload = {
             **metrics,
             "analysis": analysis,
             "is_ai_generated": is_ai_generated
-        })
+        }
+
+        # ─── Adaptive Model Learning ───
+        # Update running statistics so the model improves with each analysis
+        try:
+            _update_learning_stats(perplexity, burstiness, signal_details, is_ai_generated)
+            learning_info = get_learning_stats()
+            result_payload["model_learning"] = learning_info
+        except Exception as learn_err:
+            logger.warning(f"Learning update failed (non-critical): {learn_err}")
+
+        # Save to database (non-blocking, best-effort)
+        session_id = data.get('session_id') or request.headers.get('X-Session-Id')
+        input_source = data.get('input_source', 'paste')
+        original_filename = data.get('original_filename')
+        user_id = _get_user_id_from_request()
+
+        saved = db.save_analysis(
+            input_text=text,
+            results=result_payload,
+            input_source=input_source,
+            original_filename=original_filename,
+            session_id=session_id,
+            user_id=user_id,
+        )
+
+        # Include the analysis ID in the response so frontend can reference it
+        if saved:
+            result_payload["analysis_id"] = saved.get("id")
+
+        # Log usage
+        db.log_usage(client_ip, "/check", inference_time)
+
+        return jsonify(result_payload)
 
     except Exception as e:
         logger.error(f"Analysis error: {str(e)}")
@@ -987,6 +1178,7 @@ def sentence_analysis():
 
     Runs GPT-2 on each sentence to get its perplexity, then maps to a
     probability in [0, 1] where higher = more likely AI-generated.
+    For long documents, batches sentences and limits processing time.
     """
     if request.method == 'OPTIONS':
         response = jsonify({})
@@ -1008,19 +1200,37 @@ def sentence_analysis():
             return jsonify({"error": "Models not loaded"}), 500
 
         from nltk.tokenize import sent_tokenize
-        sentences = [s.strip() for s in sent_tokenize(text) if s.strip()]
+        import time as _time
 
-        if not sentences:
+        all_sentences = [s.strip() for s in sent_tokenize(text) if s.strip()]
+
+        if not all_sentences:
             return jsonify({"error": "No sentences found"}), 400
 
+        # For very long texts, process all sentences but batch them efficiently
+        MAX_SENTENCES = 200  # Cap at 200 sentences to avoid extreme processing times
+        sentences = all_sentences[:MAX_SENTENCES]
+        was_truncated = len(all_sentences) > MAX_SENTENCES
+
         results = []
+        MAX_TIME = 45  # Maximum processing time in seconds
+        start_time = _time.time()
 
         if tokenizer is not None and model is not None:
             import torch as _torch
 
             for sent in sentences:
+                # Check time budget
+                elapsed = _time.time() - start_time
+                if elapsed > MAX_TIME:
+                    # Time budget exhausted — use fast heuristic for remaining sentences
+                    logger.info(f"Sentence analysis time budget reached after {len(results)} sentences ({elapsed:.1f}s)")
+                    for remaining_sent in sentences[len(results):]:
+                        results.append(_heuristic_sentence_prob(remaining_sent))
+                    break
+
                 try:
-                    encodings = tokenizer(sent, return_tensors='pt', truncation=True, max_length=1024)
+                    encodings = tokenizer(sent, return_tensors='pt', truncation=True, max_length=512)
                     input_ids = encodings['input_ids']
 
                     if input_ids.size(1) < 3:
@@ -1035,16 +1245,19 @@ def sentence_analysis():
                     ppl = float(np.exp(min(loss, 20)))  # cap to avoid inf
 
                     # Map perplexity to AI probability (lower ppl = higher prob)
-                    if ppl < 20:
-                        prob = 0.90 + 0.05 * max(0, (20 - ppl) / 20)
+                    # GPT-2 text typically has PPL < 30; human text > 60-80
+                    if ppl < 15:
+                        prob = 0.95
+                    elif ppl < 25:
+                        prob = 0.85 + 0.10 * (25 - ppl) / 10
                     elif ppl < 40:
-                        prob = 0.70 + 0.20 * (40 - ppl) / 20
+                        prob = 0.70 + 0.15 * (40 - ppl) / 15
                     elif ppl < 60:
-                        prob = 0.45 + 0.25 * (60 - ppl) / 20
-                    elif ppl < 100:
-                        prob = 0.22 + 0.23 * (100 - ppl) / 40
-                    elif ppl < 200:
-                        prob = 0.08 + 0.14 * (200 - ppl) / 100
+                        prob = 0.50 + 0.20 * (60 - ppl) / 20
+                    elif ppl < 90:
+                        prob = 0.30 + 0.20 * (90 - ppl) / 30
+                    elif ppl < 150:
+                        prob = 0.12 + 0.18 * (150 - ppl) / 60
                     else:
                         prob = 0.05
 
@@ -1059,24 +1272,39 @@ def sentence_analysis():
         else:
             # Heuristic fallback when GPT-2 is unavailable
             for sent in sentences:
-                words = sent.split()
-                n = len(words)
-                avg_wl = sum(len(w) for w in words) / max(n, 1)
-                unique_ratio = len(set(w.lower() for w in words)) / max(n, 1)
-                prob = 0.25
-                if avg_wl > 5.5:
-                    prob += 0.10
-                if unique_ratio < 0.55:
-                    prob += 0.15
-                if n > 25:
-                    prob += 0.10
-                results.append({"text": sent, "probability": round(min(prob, 0.95), 3), "perplexity": None})
+                results.append(_heuristic_sentence_prob(sent))
 
-        return jsonify({"sentences": results})
+        # If we truncated, add a note about remaining sentences
+        if was_truncated:
+            remaining_count = len(all_sentences) - MAX_SENTENCES
+            results.append({
+                "text": f"[...{remaining_count} more sentences not shown]",
+                "probability": 0.0,
+                "perplexity": None,
+                "is_note": True,
+            })
+
+        return jsonify({"sentences": results, "total_sentences": len(all_sentences), "analyzed": len(sentences)})
 
     except Exception as e:
         logger.error(f"Sentence analysis error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+def _heuristic_sentence_prob(sent):
+    """Fast heuristic-based sentence AI probability (no GPU needed)."""
+    words = sent.split()
+    n = len(words)
+    avg_wl = sum(len(w) for w in words) / max(n, 1)
+    unique_ratio = len(set(w.lower() for w in words)) / max(n, 1)
+    prob = 0.25
+    if avg_wl > 5.5:
+        prob += 0.10
+    if unique_ratio < 0.55:
+        prob += 0.15
+    if n > 25:
+        prob += 0.10
+    return {"text": sent, "probability": round(min(prob, 0.95), 3), "perplexity": None}
 
 
 def calculate_cosine_similarity(text1, text2):
@@ -1104,6 +1332,181 @@ def calculate_cosine_similarity(text1, text2):
     except Exception as e:
         logger.error(f"Cosine similarity error: {str(e)}")
         return 0.0
+
+
+# ────────────────────────────────────────────
+# Database-Powered Endpoints
+# ────────────────────────────────────────────
+
+def _get_user_id_from_request():
+    """Extract authenticated user_id from Authorization header (Supabase JWT)."""
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        token = auth_header[7:]
+        user = db.get_user_from_token(token)
+        if user:
+            return user.get('id')
+    return None
+
+
+# ────────────────────────────────────────────
+# Auth Endpoints (Supabase Auth)
+# ────────────────────────────────────────────
+
+@app.route('/auth/signup', methods=['POST', 'OPTIONS'])
+def auth_signup():
+    """Register a new user with email and password."""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    email = data.get('email', '').strip()
+    password = data.get('password', '')
+    full_name = data.get('full_name', '').strip()
+
+    if not email or not password:
+        return jsonify({"error": "Email and password are required"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters"}), 400
+
+    result = db.signup_user(email, password, full_name)
+    if result and 'error' in result:
+        return jsonify(result), 400
+    if not result:
+        return jsonify({"error": "Signup failed"}), 500
+
+    return jsonify(result)
+
+
+@app.route('/auth/login', methods=['POST', 'OPTIONS'])
+def auth_login():
+    """Log in with email and password."""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    email = data.get('email', '').strip()
+    password = data.get('password', '')
+
+    if not email or not password:
+        return jsonify({"error": "Email and password are required"}), 400
+
+    result = db.login_user(email, password)
+    if result and 'error' in result:
+        return jsonify(result), 401
+    if not result:
+        return jsonify({"error": "Login failed"}), 500
+
+    return jsonify(result)
+
+
+@app.route('/auth/logout', methods=['POST', 'OPTIONS'])
+def auth_logout():
+    """Log out the current user."""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    # Client-side just clears the token; server-side we can invalidate if needed
+    return jsonify({"message": "Logged out successfully"})
+
+
+@app.route('/auth/me', methods=['GET', 'OPTIONS'])
+def auth_me():
+    """Get the currently authenticated user."""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    token = auth_header[7:]
+    user = db.get_user_from_token(token)
+    if not user:
+        return jsonify({"error": "Invalid or expired token"}), 401
+
+    return jsonify({"user": user})
+
+
+@app.route('/auth/callback')
+def auth_callback():
+    """Handle Supabase email confirmation redirect.
+    Supabase redirects here with tokens in the URL hash fragment.
+    We just serve the main page — the JS handleAuthCallback() picks up the tokens.
+    """
+    return send_from_directory('Front', 'index.html')
+
+
+@app.route('/history', methods=['GET', 'OPTIONS'])
+def history():
+    """Get analysis history for the current session or user."""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    user_id = _get_user_id_from_request()
+    session_id = request.headers.get('X-Session-Id') or request.args.get('session_id')
+    limit = min(int(request.args.get('limit', 20)), 50)
+    offset = int(request.args.get('offset', 0))
+
+    if not user_id and not session_id:
+        return jsonify({"error": "No session ID or auth token provided"}), 400
+
+    results = db.get_analysis_history(user_id=user_id, session_id=session_id, limit=limit, offset=offset)
+    return jsonify({"history": results, "count": len(results)})
+
+
+@app.route('/history/<analysis_id>', methods=['GET'])
+def get_single_analysis(analysis_id):
+    """Get a single analysis by ID."""
+    result = db.get_analysis_by_id(analysis_id)
+    if not result:
+        return jsonify({"error": "Analysis not found"}), 404
+    return jsonify(result)
+
+
+@app.route('/report', methods=['POST', 'OPTIONS'])
+def create_report():
+    """Create a shareable report link for an analysis."""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    data = request.get_json()
+    if not data or 'analysis_id' not in data:
+        return jsonify({"error": "No analysis_id provided"}), 400
+
+    report = db.create_report(data['analysis_id'])
+    if not report:
+        return jsonify({"error": "Could not create report"}), 500
+
+    return jsonify(report)
+
+
+@app.route('/report/<share_token>', methods=['GET'])
+def view_report(share_token):
+    """View a shared report by its token."""
+    report = db.get_report_by_token(share_token)
+    if not report:
+        return jsonify({"error": "Report not found or expired"}), 404
+    return jsonify(report)
+
+
+@app.route('/stats', methods=['GET'])
+def global_stats():
+    """Get aggregate platform statistics."""
+    stats = db.get_global_stats()
+    return jsonify(stats)
+
+
+@app.route('/model-stats', methods=['GET'])
+def model_stats():
+    """Get current model learning statistics."""
+    return jsonify(get_learning_stats())
+
 
 if __name__ == '__main__':
     try:

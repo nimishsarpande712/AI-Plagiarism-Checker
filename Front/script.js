@@ -37,6 +37,290 @@ const ui = {
 
 let splineLoaded = false;
 let lastAnalyzedText = '';
+let lastAnalysisId = null;
+
+// Session management - generate a persistent session ID
+function getSessionId() {
+    let sid = localStorage.getItem('plagiarism_session_id');
+    if (!sid) {
+        sid = 'sess_' + crypto.randomUUID();
+        localStorage.setItem('plagiarism_session_id', sid);
+    }
+    return sid;
+}
+
+const SESSION_ID = getSessionId();
+
+// ─── Auth State ───
+let currentUser = null;
+let authToken = null;
+
+function loadAuthState() {
+    const saved = localStorage.getItem('plagiarism_auth');
+    if (saved) {
+        try {
+            const parsed = JSON.parse(saved);
+            authToken = parsed.access_token || null;
+            currentUser = parsed.user || null;
+            if (authToken) {
+                // Verify token is still valid
+                verifyAuth();
+            }
+        } catch (e) {
+            clearAuthState();
+        }
+    }
+    updateAuthUI();
+}
+
+function saveAuthState(data) {
+    authToken = data.access_token;
+    currentUser = data.user;
+    localStorage.setItem('plagiarism_auth', JSON.stringify({
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+        user: data.user,
+    }));
+    updateAuthUI();
+}
+
+function clearAuthState() {
+    authToken = null;
+    currentUser = null;
+    localStorage.removeItem('plagiarism_auth');
+    updateAuthUI();
+}
+
+function updateAuthUI() {
+    const loginBtn = document.getElementById('loginBtn');
+    const avatarBtn = document.getElementById('userAvatarBtn');
+    const initial = document.getElementById('userInitial');
+    const menuName = document.getElementById('userMenuName');
+    const menuEmail = document.getElementById('userMenuEmail');
+
+    if (currentUser && authToken) {
+        // Logged in
+        if (loginBtn) loginBtn.style.display = 'none';
+        if (avatarBtn) {
+            avatarBtn.style.display = 'flex';
+            const name = currentUser.full_name || currentUser.email || '?';
+            if (initial) initial.textContent = name.charAt(0).toUpperCase();
+        }
+        if (menuName) menuName.textContent = currentUser.full_name || 'User';
+        if (menuEmail) menuEmail.textContent = currentUser.email || '';
+    } else {
+        // Not logged in
+        if (loginBtn) loginBtn.style.display = 'flex';
+        if (avatarBtn) avatarBtn.style.display = 'none';
+        // Close menu if open
+        const menu = document.getElementById('userMenu');
+        if (menu) menu.style.display = 'none';
+    }
+}
+
+async function verifyAuth() {
+    if (!authToken) return;
+    try {
+        const resp = await fetch('http://localhost:5000/auth/me', {
+            headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        if (!resp.ok) {
+            clearAuthState();
+        } else {
+            const data = await resp.json();
+            if (data.user) {
+                currentUser = data.user;
+                updateAuthUI();
+            }
+        }
+    } catch (e) {
+        console.warn('Auth verification failed:', e);
+    }
+}
+
+function getAuthHeaders() {
+    const headers = { 'X-Session-Id': SESSION_ID };
+    if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    return headers;
+}
+
+// ─── Auth Modal ───
+function openAuthModal(tab = 'login') {
+    const modal = document.getElementById('authModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        switchAuthTab(tab);
+        // Clear errors
+        const loginErr = document.getElementById('loginError');
+        const signupErr = document.getElementById('signupError');
+        const signupOk = document.getElementById('signupSuccess');
+        if (loginErr) loginErr.style.display = 'none';
+        if (signupErr) signupErr.style.display = 'none';
+        if (signupOk) signupOk.style.display = 'none';
+    }
+}
+
+function closeAuthModal() {
+    const modal = document.getElementById('authModal');
+    if (modal) modal.style.display = 'none';
+}
+
+function switchAuthTab(tab) {
+    const tabLogin = document.getElementById('tabLogin');
+    const tabSignup = document.getElementById('tabSignup');
+    const formLogin = document.getElementById('loginForm');
+    const formSignup = document.getElementById('signupForm');
+
+    if (tab === 'login') {
+        tabLogin.classList.add('active');
+        tabSignup.classList.remove('active');
+        formLogin.style.display = 'block';
+        formSignup.style.display = 'none';
+    } else {
+        tabLogin.classList.remove('active');
+        tabSignup.classList.add('active');
+        formLogin.style.display = 'none';
+        formSignup.style.display = 'block';
+    }
+}
+
+function toggleUserMenu() {
+    const menu = document.getElementById('userMenu');
+    if (menu) {
+        menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+    }
+}
+
+// Close user menu when clicking outside
+document.addEventListener('click', (e) => {
+    const menu = document.getElementById('userMenu');
+    const avatarBtn = document.getElementById('userAvatarBtn');
+    if (menu && menu.style.display !== 'none' && !menu.contains(e.target) && !avatarBtn.contains(e.target)) {
+        menu.style.display = 'none';
+    }
+});
+
+async function handleLogin(e) {
+    e.preventDefault();
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    const errorEl = document.getElementById('loginError');
+    const btn = document.getElementById('loginSubmitBtn');
+
+    errorEl.style.display = 'none';
+    btn.disabled = true;
+    btn.textContent = 'Signing in...';
+
+    try {
+        const resp = await fetch('http://localhost:5000/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+        });
+        const data = await resp.json();
+
+        if (!resp.ok || data.error) {
+            errorEl.textContent = data.error || 'Login failed';
+            errorEl.style.display = 'block';
+            return;
+        }
+
+        saveAuthState(data);
+        closeAuthModal();
+        loadHistory(); // Refresh with user-specific history
+    } catch (err) {
+        errorEl.textContent = 'Network error. Please try again.';
+        errorEl.style.display = 'block';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sign In';
+    }
+}
+
+async function handleSignup(e) {
+    e.preventDefault();
+    const fullName = document.getElementById('signupName').value.trim();
+    const email = document.getElementById('signupEmail').value.trim();
+    const password = document.getElementById('signupPassword').value;
+    const errorEl = document.getElementById('signupError');
+    const successEl = document.getElementById('signupSuccess');
+    const btn = document.getElementById('signupSubmitBtn');
+
+    errorEl.style.display = 'none';
+    successEl.style.display = 'none';
+    btn.disabled = true;
+    btn.textContent = 'Creating account...';
+
+    try {
+        const resp = await fetch('http://localhost:5000/auth/signup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password, full_name: fullName }),
+        });
+        const data = await resp.json();
+
+        if (!resp.ok || data.error) {
+            errorEl.textContent = data.error || 'Signup failed';
+            errorEl.style.display = 'block';
+            return;
+        }
+
+        // If session came back (email confirm disabled), auto-login
+        if (data.access_token) {
+            saveAuthState(data);
+            closeAuthModal();
+            loadHistory();
+        } else {
+            // Email confirmation required
+            successEl.textContent = 'Account created! Check your email to confirm, then sign in.';
+            successEl.style.display = 'block';
+        }
+    } catch (err) {
+        errorEl.textContent = 'Network error. Please try again.';
+        errorEl.style.display = 'block';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create Account';
+    }
+}
+
+async function handleLogout() {
+    try {
+        await fetch('http://localhost:5000/auth/logout', {
+            method: 'POST',
+            headers: getAuthHeaders(),
+        });
+    } catch (e) { /* ignore */ }
+    clearAuthState();
+    loadHistory();
+}
+
+// Handle Supabase email confirmation redirect (tokens arrive in URL hash)
+function handleAuthCallback() {
+    const hash = window.location.hash;
+    if (!hash || !hash.includes('access_token')) return;
+
+    // Parse hash params: #access_token=...&refresh_token=...&...
+    const params = new URLSearchParams(hash.substring(1));
+    const accessToken = params.get('access_token');
+    const refreshToken = params.get('refresh_token');
+
+    if (accessToken) {
+        // Save tokens and verify the session
+        authToken = accessToken;
+        saveAuthState({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+            user: null,
+        });
+        verifyAuth().then(() => loadHistory());
+
+        // Clean up the URL
+        history.replaceState(null, '', window.location.pathname);
+    }
+}
 
 function setLoading(isLoading) {
     ui.analyzeBtn.disabled = isLoading;
@@ -123,7 +407,10 @@ async function checkPlagiarism() {
 
         const combined = { ...plagiarismResult, streamlit: streamlitResult };
         lastAnalyzedText = payload.text;
+        lastAnalysisId = plagiarismResult.analysis_id || null;
         updateResults(combined);
+        // Refresh history after successful analysis
+        loadHistory();
     } catch (error) {
         console.error('Analysis error:', error);
         showError(error.message);
@@ -159,9 +446,10 @@ async function fetchAnalysis(url, data) {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            Accept: 'application/json'
+            Accept: 'application/json',
+            ...getAuthHeaders()
         },
-        body: JSON.stringify(data),
+        body: JSON.stringify({ ...data, session_id: SESSION_ID }),
         mode: 'cors'
     });
 
@@ -348,7 +636,11 @@ function updateResults(result) {
     renderFrequencyChart(result.streamlit?.word_frequency);
     renderSuggestions(result.streamlit?.word_frequency);
     renderHeatmap(lastAnalyzedText);
+    renderReport(result, aiProbability, humanProbability, confidence, reasons);
     clearError();
+
+    // Show model learning status
+    updateModelLearningUI(result.model_learning);
 }
 
 function animateValue(element, start, end, duration, suffix = '') {
@@ -632,6 +924,175 @@ function renderSuggestions(freqData) {
     });
 }
 
+/* ─── Analysis Report ─── */
+let lastReportData = null;
+
+function renderReport(result, aiProbability, humanProbability, confidence, reasons) {
+    const container = document.getElementById('reportContent');
+    if (!container) return;
+
+    const riskLevel = aiProbability >= 70 ? 'high' : (aiProbability >= 40 ? 'medium' : 'low');
+    const riskText = aiProbability >= 70 ? 'HIGH RISK — Likely AI-Generated'
+        : (aiProbability >= 40 ? 'MEDIUM RISK — Partially AI-influenced'
+        : 'LOW RISK — Likely Human-Written');
+
+    const timestamp = new Date().toLocaleString('en-US', {
+        dateStyle: 'long', timeStyle: 'short'
+    });
+
+    // Store for download
+    lastReportData = { result, aiProbability, humanProbability, confidence, reasons, riskLevel, riskText, timestamp };
+
+    container.innerHTML = `
+        <div class="report-section">
+            <h3><span class="report-icon">⚖</span> Verdict</h3>
+            <div class="report-verdict-box ${riskLevel}">
+                ${riskText} — AI Probability: ${aiProbability}%
+            </div>
+            ${reasons.length ? `<ul class="report-reasons">${reasons.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
+        </div>
+
+        <div class="report-section">
+            <h3><span class="report-icon">📊</span> Detection Metrics</h3>
+            <div class="report-metric-grid">
+                <div class="report-metric"><span class="label">AI Probability</span><span class="value">${aiProbability}%</span></div>
+                <div class="report-metric"><span class="label">Human Probability</span><span class="value">${humanProbability}%</span></div>
+                <div class="report-metric"><span class="label">Confidence</span><span class="value">${confidence}%</span></div>
+                <div class="report-metric"><span class="label">Perplexity</span><span class="value">${formatNumber(result.perplexity)}</span></div>
+                <div class="report-metric"><span class="label">Burstiness</span><span class="value">${formatNumber(result.burstiness, 4)}</span></div>
+                <div class="report-metric"><span class="label">Entropy</span><span class="value">${result.entropy ? formatNumber(result.entropy, 3) : '—'}</span></div>
+                <div class="report-metric"><span class="label">Token Count</span><span class="value">${result.token_count || '—'}</span></div>
+                <div class="report-metric"><span class="label">Model</span><span class="value">${result.model_name || '—'}</span></div>
+                <div class="report-metric"><span class="label">Inference Time</span><span class="value">${result.inference_time ? formatNumber(result.inference_time, 3) + 's' : '—'}</span></div>
+            </div>
+        </div>
+
+        <div class="report-section">
+            <h3><span class="report-icon">🔬</span> Signal Analysis</h3>
+            <div class="report-metric-grid">
+                ${Object.entries(result.analysis?.signals?.contributions || {}).map(([key, value]) => {
+                    const label = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                    const pct = Math.round(value * 100);
+                    return `<div class="report-metric"><span class="label">${label}</span><span class="value">${pct}%</span></div>`;
+                }).join('')}
+            </div>
+        </div>
+
+        <div class="report-section">
+            <h3><span class="report-icon">📝</span> Text Statistics</h3>
+            <div class="report-metric-grid">
+                <div class="report-metric"><span class="label">Characters</span><span class="value">${lastAnalyzedText.length.toLocaleString()}</span></div>
+                <div class="report-metric"><span class="label">Words</span><span class="value">${lastAnalyzedText.split(/\s+/).filter(Boolean).length.toLocaleString()}</span></div>
+                <div class="report-metric"><span class="label">Style Consistency</span><span class="value">${result.style_consistency != null ? Math.round(result.style_consistency * 100) + '%' : '—'}</span></div>
+                <div class="report-metric"><span class="label">Complexity</span><span class="value">${result.complexity != null ? Math.round(result.complexity * 100) + '%' : '—'}</span></div>
+                <div class="report-metric"><span class="label">Variability</span><span class="value">${result.variability != null ? Math.round(result.variability * 100) + '%' : '—'}</span></div>
+                <div class="report-metric"><span class="label">Readability</span><span class="value">${result.readability != null ? Math.round(result.readability * 100) + '%' : '—'}</span></div>
+            </div>
+        </div>
+
+        <p class="report-timestamp">Report generated: ${timestamp}</p>
+    `;
+}
+
+function downloadReport() {
+    if (!lastReportData) {
+        alert('Run an analysis first to generate a report.');
+        return;
+    }
+
+    const { result, aiProbability, humanProbability, confidence, reasons, riskLevel, riskText, timestamp } = lastReportData;
+
+    const inputPreview = lastAnalyzedText.length > 500
+        ? lastAnalyzedText.substring(0, 500) + '...'
+        : lastAnalyzedText;
+
+    const signalRows = Object.entries(result.analysis?.signals?.contributions || {}).map(([key, value]) => {
+        const label = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+        const pct = Math.round(value * 100);
+        const bar = '█'.repeat(Math.round(pct / 5)) + '░'.repeat(20 - Math.round(pct / 5));
+        return `<tr><td style="padding:6px 12px;border:1px solid #ddd;font-weight:500;">${label}</td><td style="padding:6px 12px;border:1px solid #ddd;font-family:monospace;">${bar} ${pct}%</td></tr>`;
+    }).join('');
+
+    const riskColors = { low: '#2dd4a8', medium: '#e9c46a', high: '#e76f51' };
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Plagiarism Analysis Report</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #fef9ef; color: #1a1a1a; padding: 40px; max-width: 900px; margin: 0 auto; }
+        h1 { font-size: 1.8rem; margin-bottom: 4px; }
+        h2 { font-size: 1.1rem; color: #f4845f; margin: 24px 0 10px; border-bottom: 2px solid #1a1a1a; padding-bottom: 6px; }
+        .header { text-align: center; margin-bottom: 30px; border-bottom: 3px solid #1a1a1a; padding-bottom: 20px; }
+        .header p { color: #7a7067; font-size: 0.9rem; }
+        .verdict-box { padding: 16px 20px; border-radius: 10px; border: 2px solid #1a1a1a; font-weight: 700; font-size: 1.1rem; margin: 12px 0; background: ${riskColors[riskLevel]}33; border-left: 6px solid ${riskColors[riskLevel]}; }
+        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        td { padding: 8px 12px; border: 1px solid #ddd; font-size: 0.9rem; }
+        td:first-child { font-weight: 600; background: #fcecd3; width: 40%; }
+        .reasons { margin: 8px 0; padding-left: 20px; }
+        .reasons li { padding: 3px 0; font-size: 0.88rem; color: #555; }
+        .text-preview { background: #f5f0e3; border: 1px solid #ddd; border-radius: 8px; padding: 14px; font-size: 0.85rem; max-height: 200px; overflow: hidden; color: #444; margin: 8px 0; white-space: pre-wrap; word-break: break-word; }
+        .footer { text-align: center; margin-top: 30px; padding-top: 16px; border-top: 2px solid #ddd; font-size: 0.78rem; color: #999; }
+        @media print { body { padding: 20px; } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔍 AI Plagiarism Analysis Report</h1>
+        <p>Generated: ${timestamp}</p>
+    </div>
+
+    <h2>Verdict</h2>
+    <div class="verdict-box">${riskText} — AI Probability: ${aiProbability}%</div>
+    ${reasons.length ? `<ul class="reasons">${reasons.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
+
+    <h2>Detection Metrics</h2>
+    <table>
+        <tr><td>AI Probability</td><td>${aiProbability}%</td></tr>
+        <tr><td>Human Probability</td><td>${humanProbability}%</td></tr>
+        <tr><td>Confidence Score</td><td>${confidence}%</td></tr>
+        <tr><td>Perplexity</td><td>${formatNumber(result.perplexity)}</td></tr>
+        <tr><td>Burstiness</td><td>${formatNumber(result.burstiness, 4)}</td></tr>
+        <tr><td>Entropy</td><td>${result.entropy ? formatNumber(result.entropy, 3) : '—'}</td></tr>
+        <tr><td>Token Count</td><td>${result.token_count || '—'}</td></tr>
+        <tr><td>Model Used</td><td>${result.model_name || '—'}</td></tr>
+        <tr><td>Inference Time</td><td>${result.inference_time ? formatNumber(result.inference_time, 3) + 's' : '—'}</td></tr>
+    </table>
+
+    <h2>Signal Analysis</h2>
+    <table>${signalRows}</table>
+
+    <h2>Additional Metrics</h2>
+    <table>
+        <tr><td>Style Consistency</td><td>${result.style_consistency != null ? Math.round(result.style_consistency * 100) + '%' : '—'}</td></tr>
+        <tr><td>Complexity</td><td>${result.complexity != null ? Math.round(result.complexity * 100) + '%' : '—'}</td></tr>
+        <tr><td>Variability</td><td>${result.variability != null ? Math.round(result.variability * 100) + '%' : '—'}</td></tr>
+        <tr><td>Readability</td><td>${result.readability != null ? Math.round(result.readability * 100) + '%' : '—'}</td></tr>
+    </table>
+
+    <h2>Analyzed Text (Preview)</h2>
+    <div class="text-preview">${inputPreview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+
+    <div class="footer">
+        <p>AI Plagiarism Engine · Perplexity + Burstiness + Entropy Analysis</p>
+        <p>Characters: ${lastAnalyzedText.length.toLocaleString()} · Words: ${lastAnalyzedText.split(/\\s+/).filter(Boolean).length.toLocaleString()}</p>
+    </div>
+</body>
+</html>`;
+
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `AI-Plagiarism-Report-${new Date().toISOString().slice(0, 10)}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
 /* ─── Sentence AI Heatmap ─── */
 function heatmapColor(prob) {
     // Green (human) → Yellow (uncertain) → Red (AI)
@@ -669,12 +1130,19 @@ async function renderHeatmap(text) {
     }
 
     try {
-        const response = await fetchWithRetry('http://localhost:5000/sentence-analysis', {
+        // Use AbortController for timeout on large texts
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+
+        const response = await fetch('http://localhost:5000/sentence-analysis', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
             body: JSON.stringify({ text }),
-            mode: 'cors'
+            mode: 'cors',
+            signal: controller.signal
         });
+
+        clearTimeout(timeoutId);
 
         const data = await response.json();
         if (!response.ok || !data.sentences || !data.sentences.length) {
@@ -683,7 +1151,27 @@ async function renderHeatmap(text) {
         }
 
         ui.heatmapContainer.innerHTML = '';
+
+        // Show sentence count info if applicable
+        if (data.total_sentences && data.total_sentences > data.analyzed) {
+            const info = document.createElement('p');
+            info.className = 'heatmap-info';
+            info.textContent = `Showing ${data.analyzed} of ${data.total_sentences} sentences`;
+            info.style.cssText = 'font-size:0.78rem;color:var(--muted);margin-bottom:8px;font-weight:600;';
+            ui.heatmapContainer.appendChild(info);
+        }
+
         data.sentences.forEach((s, idx) => {
+            // Skip info notes
+            if (s.is_note) {
+                const note = document.createElement('span');
+                note.className = 'heatmap-note';
+                note.textContent = s.text;
+                note.style.cssText = 'color:var(--muted);font-style:italic;font-size:0.85rem;';
+                ui.heatmapContainer.appendChild(note);
+                return;
+            }
+
             const span = document.createElement('span');
             span.className = 'heatmap-span';
             span.style.backgroundColor = heatmapColor(s.probability);
@@ -701,7 +1189,46 @@ async function renderHeatmap(text) {
         });
     } catch (err) {
         console.error('Heatmap error:', err);
-        ui.heatmapContainer.innerHTML = '<p class="heatmap-placeholder">Heatmap unavailable.</p>';
+        if (err.name === 'AbortError') {
+            ui.heatmapContainer.innerHTML = '<p class="heatmap-placeholder">Heatmap analysis timed out for this text. Try with shorter text.</p>';
+        } else {
+            ui.heatmapContainer.innerHTML = '<p class="heatmap-placeholder">Heatmap unavailable.</p>';
+        }
+    }
+}
+
+function updateModelLearningUI(learningData) {
+    // Remove existing indicator if any
+    const existing = document.getElementById('trainingIndicator');
+    if (existing) existing.remove();
+
+    if (!learningData || !learningData.total_analyses) return;
+
+    const indicator = document.createElement('div');
+    indicator.id = 'trainingIndicator';
+    indicator.className = 'training-indicator';
+    
+    const n = learningData.total_analyses;
+    const improved = learningData.model_improved;
+    
+    if (improved) {
+        indicator.innerHTML = `<span>🧠</span> Model adapted (${n} samples)`;
+        indicator.style.borderColor = 'var(--success)';
+        indicator.style.background = 'rgba(45, 212, 168, 0.15)';
+    } else {
+        indicator.innerHTML = `<span>📈</span> Training: ${n}/20 samples`;
+        indicator.style.borderColor = 'var(--warning)';
+        indicator.style.background = 'rgba(233, 196, 106, 0.15)';
+        indicator.style.color = '#b8860b';
+    }
+
+    // Insert into nav-right, before the settings button
+    const navRight = document.querySelector('.nav-right');
+    const settingsBtn = navRight?.querySelector('.icon-button');
+    if (navRight && settingsBtn) {
+        navRight.insertBefore(indicator, settingsBtn);
+    } else if (navRight) {
+        navRight.appendChild(indicator);
     }
 }
 
@@ -733,4 +1260,122 @@ document.addEventListener('DOMContentLoaded', () => {
     ui.monospaceToggle.addEventListener('change', e => {
         ui.textInput.classList.toggle('monospace-input', e.target.checked);
     });
+
+    // Share button
+    const shareBtn = document.getElementById('shareBtn');
+    if (shareBtn) {
+        shareBtn.addEventListener('click', () => shareReport(lastAnalysisId));
+    }
+
+    // Download report button
+    const downloadBtn = document.getElementById('downloadReportBtn');
+    if (downloadBtn) {
+        downloadBtn.addEventListener('click', downloadReport);
+    }
+
+    // Load analysis history on page load
+    loadHistory();
+
+    // Load auth state on page load
+    loadAuthState();
+
+    // Handle Supabase email confirmation redirect (tokens in URL hash)
+    handleAuthCallback();
 });
+
+// ─── History Panel ───
+async function loadHistory() {
+    try {
+        const response = await fetch(`http://localhost:5000/history?session_id=${SESSION_ID}&limit=10`, {
+            headers: getAuthHeaders()
+        });
+        const data = await response.json();
+        renderHistory(data.history || []);
+    } catch (err) {
+        console.warn('Could not load history:', err);
+    }
+}
+
+function renderHistory(items) {
+    const container = document.getElementById('historyList');
+    if (!container) return;
+
+    if (!items.length) {
+        container.innerHTML = '<p style="color:var(--muted);text-align:center;padding:16px;">No previous scans yet.</p>';
+        return;
+    }
+
+    container.innerHTML = items.map(item => {
+        const date = new Date(item.created_at).toLocaleDateString('en-US', {
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+        });
+        const risk = item.risk_level || 'low';
+        const riskColors = { low: '#d4f5ef', medium: '#f1e0a3', high: '#f6b8a4', inconclusive: '#e0e0e0' };
+        const prob = item.ai_probability != null ? Math.round(item.ai_probability * 100) + '%' : '—';
+
+        return `
+            <div class="history-item" onclick="viewAnalysis('${item.id}')" style="
+                background: var(--bg, #faf4e8);
+                border: 2px solid var(--border, #1a1a1a);
+                border-radius: 12px;
+                padding: 10px 14px;
+                cursor: pointer;
+                margin-bottom: 8px;
+                transition: transform 0.15s ease;
+            " onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='none'">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-weight:600;font-size:0.9rem;">${date}</span>
+                    <span style="
+                        padding:3px 10px;
+                        border:2px solid var(--border, #1a1a1a);
+                        border-radius:20px;
+                        font-size:0.75rem;
+                        font-weight:700;
+                        background:${riskColors[risk] || riskColors.low};
+                    ">${risk.toUpperCase()}</span>
+                </div>
+                <div style="display:flex;gap:16px;margin-top:6px;font-size:0.82rem;color:var(--muted, #6b5c42);">
+                    <span>AI: ${prob}</span>
+                    <span>PPL: ${item.perplexity ? item.perplexity.toFixed(1) : '—'}</span>
+                    <span>${item.input_source || 'paste'}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function viewAnalysis(analysisId) {
+    try {
+        const response = await fetch(`http://localhost:5000/history/${analysisId}`);
+        const data = await response.json();
+        if (data && data.input_text) {
+            ui.textInput.value = data.input_text;
+            updateCharCount();
+        }
+    } catch (err) {
+        console.warn('Could not load analysis:', err);
+    }
+}
+
+// Share report
+async function shareReport(analysisId) {
+    if (!analysisId) {
+        alert('Run an analysis first before sharing.');
+        return;
+    }
+    try {
+        const response = await fetch('http://localhost:5000/report', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ analysis_id: analysisId }),
+        });
+        const data = await response.json();
+        if (data.share_token) {
+            const url = `${window.location.origin}/report/${data.share_token}`;
+            await navigator.clipboard?.writeText(url);
+            alert(`Report link copied to clipboard!\n${url}`);
+        }
+    } catch (err) {
+        console.error('Could not create report:', err);
+    }
+}

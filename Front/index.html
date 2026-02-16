@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Plagiarism Engine</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=2">
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
 </head>
@@ -21,6 +21,38 @@
                     <span class="status-dot active"></span>
                     <span class="status-text">Model Active</span>
                 </div>
+
+                <!-- Auth: shows login button or user avatar -->
+                <div id="authContainer" class="auth-container">
+                    <!-- Not logged in -->
+                    <button id="loginBtn" class="auth-btn" type="button" onclick="openAuthModal('login')" title="Sign In">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="12" cy="7" r="4"></circle>
+                        </svg>
+                        Sign In
+                    </button>
+                    <!-- Logged in (hidden by default) -->
+                    <button id="userAvatarBtn" class="user-avatar-btn" type="button" onclick="toggleUserMenu()" style="display:none;" title="Account">
+                        <span id="userInitial" class="user-initial">?</span>
+                    </button>
+                    <!-- User dropdown -->
+                    <div id="userMenu" class="user-menu" style="display:none;">
+                        <div class="user-menu-header">
+                            <div id="userMenuName" class="user-name">User</div>
+                            <div id="userMenuEmail" class="user-email">email</div>
+                        </div>
+                        <button onclick="handleLogout()" class="user-menu-item">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                                <polyline points="16 17 21 12 16 7"></polyline>
+                                <line x1="21" y1="12" x2="9" y2="12"></line>
+                            </svg>
+                            Sign Out
+                        </button>
+                    </div>
+                </div>
+
                 <button class="icon-button" type="button" aria-label="Settings">
                     <span class="icon-gear"></span>
                 </button>
@@ -83,7 +115,10 @@
                 <article class="panel verdict-card">
                     <div class="panel-title">
                         <p class="eyebrow">Verdict</p>
-                        <div class="risk-badge" id="riskBadge">Low Risk</div>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <button class="icon-button" id="shareBtn" type="button" aria-label="Share report" title="Share report">↗</button>
+                            <div class="risk-badge" id="riskBadge">Low Risk</div>
+                        </div>
                     </div>
                     <div class="verdict-metrics">
                         <div class="metric">
@@ -180,12 +215,141 @@
                     </div>
                     <div id="suggestionList" class="suggestion-list"></div>
                 </article>
+
+                <!-- Full Analysis Report -->
+                <article class="panel report-card" id="reportCard" style="grid-column: 1 / -1;">
+                    <div class="panel-title">
+                        <p class="eyebrow">Analysis Report</p>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <button class="download-report-btn" id="downloadReportBtn" type="button" aria-label="Download Report" title="Download Report as PDF">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="7 10 12 15 17 10"/>
+                                    <line x1="12" y1="15" x2="12" y2="3"/>
+                                </svg>
+                                Download Report
+                            </button>
+                        </div>
+                    </div>
+                    <div id="reportContent" class="report-content">
+                        <p class="heatmap-placeholder">Generating report…</p>
+                    </div>
+                </article>
             </section>
         </main>
 
         <footer class="footer">
             <span>AI Plagiarism Engine · Perplexity + Burstiness + Entropy</span>
         </footer>
+
+        <!-- History Sidebar -->
+        <aside id="historyPanel" style="
+            position: fixed;
+            right: 0;
+            top: 60px;
+            width: 300px;
+            height: calc(100vh - 60px);
+            background: var(--bg, #faf4e8);
+            border-left: 2px solid var(--border, #1a1a1a);
+            padding: 16px;
+            overflow-y: auto;
+            z-index: 100;
+            transform: translateX(100%);
+            transition: transform 0.3s ease;
+        ">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <p class="eyebrow" style="margin:0;">Scan History</p>
+                <button onclick="toggleHistory()" style="
+                    background:none;
+                    border:2px solid var(--border, #1a1a1a);
+                    border-radius:8px;
+                    cursor:pointer;
+                    padding:4px 8px;
+                    font-weight:700;
+                    font-size:0.8rem;
+                ">✕</button>
+            </div>
+            <div id="historyList">
+                <p style="color:var(--muted, #6b5c42);text-align:center;padding:16px;">Loading history…</p>
+            </div>
+        </aside>
+    </div>
+
+    <button id="historyToggleBtn" onclick="toggleHistory()" style="
+        position: fixed;
+        right: 16px;
+        bottom: 20px;
+        z-index: 101;
+        background: var(--bg, #faf4e8);
+        border: 2px solid var(--border, #1a1a1a);
+        border-radius: 50%;
+        width: 48px;
+        height: 48px;
+        cursor: pointer;
+        font-size: 1.3rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        transition: transform 0.2s ease;
+    " onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform='scale(1)'" title="Scan History" aria-label="Toggle scan history">
+        📋
+    </button>
+
+    <script>
+        let historyOpen = false;
+        function toggleHistory() {
+            historyOpen = !historyOpen;
+            const panel = document.getElementById('historyPanel');
+            panel.style.transform = historyOpen ? 'translateX(0)' : 'translateX(100%)';
+        }
+    </script>
+
+    <!-- Auth Modal -->
+    <div id="authModal" class="auth-overlay" style="display:none;" onclick="if(event.target===this)closeAuthModal()">
+        <div class="auth-modal">
+            <button class="auth-close" onclick="closeAuthModal()" aria-label="Close">&times;</button>
+
+            <div class="auth-tabs">
+                <button id="tabLogin" class="auth-tab active" onclick="switchAuthTab('login')">Sign In</button>
+                <button id="tabSignup" class="auth-tab" onclick="switchAuthTab('signup')">Sign Up</button>
+            </div>
+
+            <!-- Login Form -->
+            <form id="loginForm" class="auth-form" onsubmit="handleLogin(event)">
+                <div class="auth-field">
+                    <label for="loginEmail">Email</label>
+                    <input type="email" id="loginEmail" placeholder="you@example.com" required autocomplete="email">
+                </div>
+                <div class="auth-field">
+                    <label for="loginPassword">Password</label>
+                    <input type="password" id="loginPassword" placeholder="••••••••" required minlength="6" autocomplete="current-password">
+                </div>
+                <p id="loginError" class="auth-error" style="display:none;"></p>
+                <button type="submit" class="primary auth-submit" id="loginSubmitBtn">Sign In</button>
+                <p class="auth-switch">Don't have an account? <a href="#" onclick="switchAuthTab('signup');return false;">Sign Up</a></p>
+            </form>
+
+            <!-- Signup Form -->
+            <form id="signupForm" class="auth-form" style="display:none;" onsubmit="handleSignup(event)">
+                <div class="auth-field">
+                    <label for="signupName">Full Name</label>
+                    <input type="text" id="signupName" placeholder="John Doe" autocomplete="name">
+                </div>
+                <div class="auth-field">
+                    <label for="signupEmail">Email</label>
+                    <input type="email" id="signupEmail" placeholder="you@example.com" required autocomplete="email">
+                </div>
+                <div class="auth-field">
+                    <label for="signupPassword">Password</label>
+                    <input type="password" id="signupPassword" placeholder="Min. 6 characters" required minlength="6" autocomplete="new-password">
+                </div>
+                <p id="signupError" class="auth-error" style="display:none;"></p>
+                <p id="signupSuccess" class="auth-success" style="display:none;"></p>
+                <button type="submit" class="primary auth-submit" id="signupSubmitBtn">Create Account</button>
+                <p class="auth-switch">Already have an account? <a href="#" onclick="switchAuthTab('login');return false;">Sign In</a></p>
+            </form>
+        </div>
     </div>
 
     <script src="script.js"></script>
