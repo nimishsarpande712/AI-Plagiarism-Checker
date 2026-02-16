@@ -751,6 +751,21 @@ function updateResults(result) {
 
     // Show model learning status
     updateModelLearningUI(result.model_learning);
+
+    // Cross-document plagiarism check (async, non-blocking)
+    runCrossDocCheck(lastAnalyzedText, result.analysis_id);
+
+    // Reset feedback for new analysis
+    feedbackSubmitted = false;
+    const feedbackStatus = document.getElementById('feedbackStatus');
+    const correctBtn = document.getElementById('feedbackCorrectBtn');
+    const incorrectBtn = document.getElementById('feedbackIncorrectBtn');
+    if (feedbackStatus) feedbackStatus.textContent = '';
+    if (correctBtn) { correctBtn.disabled = false; correctBtn.classList.remove('selected'); }
+    if (incorrectBtn) { incorrectBtn.disabled = false; incorrectBtn.classList.remove('selected'); }
+
+    // Load trust score
+    loadTrustScore();
 }
 
 function animateValue(element, start, end, duration, suffix = '') {
@@ -1385,6 +1400,18 @@ document.addEventListener('DOMContentLoaded', () => {
         downloadBtn.addEventListener('click', downloadReport);
     }
 
+    // Compare mode file uploads
+    const cf1 = document.getElementById('compareFile1');
+    const cf2 = document.getElementById('compareFile2');
+    if (cf1) cf1.addEventListener('change', () => uploadFileForCompare(cf1, document.getElementById('compareText1'), document.getElementById('compareStatus1')));
+    if (cf2) cf2.addEventListener('change', () => uploadFileForCompare(cf2, document.getElementById('compareText2'), document.getElementById('compareStatus2')));
+
+    // Batch mode dropzone
+    initBatchDropzone();
+
+    // Load trust score on startup
+    loadTrustScore();
+
     // Load analysis history on page load
     loadHistory();
 
@@ -1489,5 +1516,462 @@ async function shareReport(analysisId) {
         }
     } catch (err) {
         console.error('Could not create report:', err);
+    }
+}
+
+
+// ═══════════════════════════════════════════
+// Mode Switching: Analyze / Compare / Batch
+// ═══════════════════════════════════════════
+
+let currentMode = 'analyze';
+
+function switchMode(mode) {
+    currentMode = mode;
+    // Update tab buttons
+    document.querySelectorAll('.mode-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.mode === mode);
+    });
+    // Show/hide mode content
+    document.querySelectorAll('.mode-content').forEach(mc => mc.classList.remove('active'));
+    const target = document.getElementById(
+        mode === 'analyze' ? 'modeAnalyze' : mode === 'compare' ? 'modeCompare' : 'modeBatch'
+    );
+    if (target) target.classList.add('active');
+
+    // Show/hide result sections
+    const analyzeResults = document.getElementById('results');
+    const compareResults = document.getElementById('compareResults');
+    const batchResults = document.getElementById('batchResults');
+    if (analyzeResults) analyzeResults.classList.toggle('hidden', mode !== 'analyze');
+    if (compareResults) compareResults.classList.toggle('hidden', mode !== 'compare');
+    if (batchResults) batchResults.classList.toggle('hidden', mode !== 'batch');
+}
+
+
+// ═══════════════════════════════════════════
+// Feature: Side-by-Side Text Comparison
+// ═══════════════════════════════════════════
+
+async function uploadFileForCompare(fileInput, textArea, statusEl) {
+    const file = fileInput.files[0];
+    if (!file) return;
+    statusEl.textContent = 'Uploading...';
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const resp = await fetchWithRetry('http://localhost:5000/upload', {
+            method: 'POST', body: formData, mode: 'cors'
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Upload failed');
+        textArea.value = data.text;
+        statusEl.textContent = `${data.filename} (${data.characters} chars)`;
+        statusEl.style.color = '#1a1a1a';
+    } catch (err) {
+        statusEl.textContent = err.message;
+        statusEl.style.color = 'var(--danger)';
+    }
+}
+
+async function runComparison() {
+    const text1 = document.getElementById('compareText1').value.trim();
+    const text2 = document.getElementById('compareText2').value.trim();
+    const resultsEl = document.getElementById('compareResults');
+    const verdictEl = document.getElementById('compareVerdict');
+    const statsGrid = document.getElementById('compareStatsGrid');
+    const simBar = document.getElementById('compareSimilarityBar');
+    const diffView = document.getElementById('compareDiffView');
+
+    if (!text1 || !text2) {
+        alert('Please enter both texts to compare.');
+        return;
+    }
+    if (text1.length < 30 || text2.length < 30) {
+        alert('Both texts must be at least 30 characters.');
+        return;
+    }
+
+    const btn = document.getElementById('compareBtn');
+    btn.disabled = true;
+    btn.textContent = 'Comparing...';
+    resultsEl.classList.remove('hidden');
+    statsGrid.innerHTML = '<p class="heatmap-placeholder">Analyzing texts…</p>';
+    simBar.innerHTML = '';
+    diffView.innerHTML = '';
+
+    try {
+        const resp = await fetchWithRetry('http://localhost:5000/compare', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text1, text2 }),
+            mode: 'cors'
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Comparison failed');
+
+        // Verdict
+        const sim = data.overall_similarity;
+        const verdictColor = sim >= 70 ? 'var(--danger)' : sim >= 40 ? 'var(--warning)' : 'var(--success)';
+        verdictEl.textContent = `${data.verdict} (${sim}% overall similarity)`;
+        verdictEl.style.color = verdictColor;
+
+        // Stats grid
+        const s = data.stats;
+        statsGrid.innerHTML = `
+            <div class="compare-stat"><span class="compare-stat-value" style="color:${verdictColor}">${sim}%</span><span class="compare-stat-label">Overall Similarity</span></div>
+            <div class="compare-stat"><span class="compare-stat-value">${s.high_matches}</span><span class="compare-stat-label">High Matches</span></div>
+            <div class="compare-stat"><span class="compare-stat-value">${s.partial_matches}</span><span class="compare-stat-label">Partial Matches</span></div>
+            <div class="compare-stat"><span class="compare-stat-value">${s.unique_in_text1}</span><span class="compare-stat-label">Unique in Text 1</span></div>
+            <div class="compare-stat"><span class="compare-stat-value">${s.unique_in_text2}</span><span class="compare-stat-label">Unique in Text 2</span></div>
+            <div class="compare-stat"><span class="compare-stat-value">${s.text1_words} / ${s.text2_words}</span><span class="compare-stat-label">Word Count</span></div>
+        `;
+
+        // Similarity bar
+        const matchPct = Math.round(((s.high_matches + s.partial_matches) / Math.max(s.text1_sentences, 1)) * 100);
+        simBar.innerHTML = `
+            <div class="sim-bar-track">
+                <div class="sim-bar-fill" style="width:${sim}%;background:${verdictColor};"></div>
+            </div>
+            <div class="sim-bar-labels">
+                <span>0% (Unique)</span><span>${sim}%</span><span>100% (Identical)</span>
+            </div>
+        `;
+
+        // Diff view
+        let diffHtml = '<div class="diff-container">';
+        data.sentence_matches.forEach(m => {
+            const statusClass = m.status === 'high_match' ? 'diff-high' : m.status === 'partial_match' ? 'diff-partial' : 'diff-unique';
+            const statusIcon = m.status === 'high_match' ? '🔴' : m.status === 'partial_match' ? '🟡' : '🟢';
+            diffHtml += `
+                <div class="diff-row ${statusClass}">
+                    <div class="diff-cell diff-left">
+                        <span class="diff-index">${m.index1 + 1}</span>
+                        <span class="diff-text">${escapeHtml(m.text1)}</span>
+                    </div>
+                    <div class="diff-indicator">
+                        <span class="diff-status-icon">${statusIcon}</span>
+                        <span class="diff-pct">${m.best_similarity}%</span>
+                    </div>
+                    <div class="diff-cell diff-right">
+                        ${m.text2 ? `<span class="diff-index">${m.index2 + 1}</span><span class="diff-text">${escapeHtml(m.text2)}</span>` : '<span class="diff-text diff-no-match">No match</span>'}
+                    </div>
+                </div>
+            `;
+        });
+
+        // Unique sentences in text 2
+        if (data.unique_in_text2 && data.unique_in_text2.length > 0) {
+            diffHtml += '<div class="diff-section-title">Unique sentences in Text 2:</div>';
+            data.unique_in_text2.forEach(u => {
+                diffHtml += `
+                    <div class="diff-row diff-unique-right">
+                        <div class="diff-cell diff-left"><span class="diff-text diff-no-match">—</span></div>
+                        <div class="diff-indicator"><span class="diff-status-icon">🟢</span><span class="diff-pct">0%</span></div>
+                        <div class="diff-cell diff-right"><span class="diff-index">${u.index2 + 1}</span><span class="diff-text">${escapeHtml(u.text2)}</span></div>
+                    </div>
+                `;
+            });
+        }
+        diffHtml += '</div>';
+        diffView.innerHTML = diffHtml;
+
+    } catch (err) {
+        statsGrid.innerHTML = `<p class="heatmap-placeholder" style="color:var(--danger);">${err.message}</p>`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Compare Texts';
+    }
+}
+
+
+// ═══════════════════════════════════════════
+// Feature: Cross-Document Plagiarism Ring
+// ═══════════════════════════════════════════
+
+async function runCrossDocCheck(text, excludeId) {
+    const container = document.getElementById('crossDocContent');
+    if (!container) return;
+    container.innerHTML = '<p class="heatmap-placeholder">Checking for similar documents…</p>';
+
+    try {
+        const resp = await fetchWithRetry('http://localhost:5000/cross-check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ text, threshold: 0.3, exclude_id: excludeId }),
+            mode: 'cors'
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Cross-check failed');
+
+        if (!data.matches || data.matches.length === 0) {
+            container.innerHTML = `
+                <div class="crossdoc-empty">
+                    <span class="crossdoc-icon">✅</span>
+                    <p>No similar documents found in the database.</p>
+                    <p class="crossdoc-meta">Compared against ${data.total_compared} stored document${data.total_compared !== 1 ? 's' : ''}.</p>
+                </div>
+            `;
+            return;
+        }
+
+        let html = '';
+        if (data.ring_detected) {
+            html += `<div class="crossdoc-alert">⚠️ Plagiarism ring detected — ${data.matches.length} similar documents found!</div>`;
+        }
+        html += `<p class="crossdoc-meta">Found ${data.matches.length} match${data.matches.length > 1 ? 'es' : ''} (threshold: ${data.threshold}%) from ${data.total_compared} documents.</p>`;
+
+        html += '<div class="crossdoc-list">';
+        data.matches.forEach((m, i) => {
+            const simColor = m.similarity >= 70 ? 'var(--danger)' : m.similarity >= 40 ? 'var(--warning)' : 'var(--success)';
+            const date = m.date ? new Date(m.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unknown';
+            html += `
+                <div class="crossdoc-match">
+                    <div class="crossdoc-match-header">
+                        <span class="crossdoc-sim" style="color:${simColor};border-color:${simColor};">${m.similarity}%</span>
+                        <div class="crossdoc-match-info">
+                            <span class="crossdoc-match-name">${m.filename ? escapeHtml(m.filename) : 'Document #' + (i + 1)}</span>
+                            <span class="crossdoc-match-meta">${date} · ${m.word_count} words · ${m.source} ${m.was_ai ? '· 🤖 AI-flagged' : ''}</span>
+                        </div>
+                    </div>
+                    <p class="crossdoc-snippet">"${escapeHtml(m.snippet)}"</p>
+                </div>
+            `;
+        });
+        html += '</div>';
+        container.innerHTML = html;
+
+    } catch (err) {
+        container.innerHTML = `<p class="heatmap-placeholder">Cross-document check unavailable: ${err.message}</p>`;
+    }
+}
+
+
+// ═══════════════════════════════════════════
+// Feature: Community Feedback
+// ═══════════════════════════════════════════
+
+let feedbackSubmitted = false;
+
+async function submitFeedback(isCorrect) {
+    if (feedbackSubmitted || !lastAnalysisId) return;
+
+    const statusEl = document.getElementById('feedbackStatus');
+    const correctBtn = document.getElementById('feedbackCorrectBtn');
+    const incorrectBtn = document.getElementById('feedbackIncorrectBtn');
+
+    correctBtn.disabled = true;
+    incorrectBtn.disabled = true;
+
+    try {
+        const resp = await fetch('http://localhost:5000/feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({
+                analysis_id: lastAnalysisId,
+                is_correct: isCorrect,
+                session_id: SESSION_ID,
+            }),
+        });
+        const data = await resp.json();
+        feedbackSubmitted = true;
+
+        statusEl.textContent = data.message || 'Feedback submitted!';
+        statusEl.style.color = 'var(--success)';
+
+        // Highlight the selected button
+        if (isCorrect) {
+            correctBtn.classList.add('selected');
+        } else {
+            incorrectBtn.classList.add('selected');
+        }
+
+        // Load updated trust score
+        loadTrustScore();
+
+    } catch (err) {
+        statusEl.textContent = 'Could not submit feedback.';
+        statusEl.style.color = 'var(--danger)';
+        correctBtn.disabled = false;
+        incorrectBtn.disabled = false;
+    }
+}
+
+async function loadTrustScore() {
+    try {
+        const resp = await fetch('http://localhost:5000/feedback/stats');
+        const data = await resp.json();
+        const trustEl = document.getElementById('feedbackTrust');
+        if (trustEl && data.total_feedback > 0) {
+            trustEl.textContent = `Trust Score: ${data.trust_score}% (${data.total_feedback} votes)`;
+        }
+    } catch (e) {
+        // Silently ignore
+    }
+}
+
+
+// ═══════════════════════════════════════════
+// Feature: Batch Analysis
+// ═══════════════════════════════════════════
+
+let batchFiles = [];
+
+function initBatchDropzone() {
+    const dropzone = document.getElementById('batchDropzone');
+    const fileInput = document.getElementById('batchFileInput');
+    if (!dropzone || !fileInput) return;
+
+    dropzone.addEventListener('click', () => fileInput.click());
+    dropzone.addEventListener('dragover', e => {
+        e.preventDefault();
+        dropzone.classList.add('dragover');
+    });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', e => {
+        e.preventDefault();
+        dropzone.classList.remove('dragover');
+        const files = Array.from(e.dataTransfer.files).filter(f =>
+            f.name.match(/\.(txt|docx|pdf)$/i)
+        );
+        addBatchFiles(files);
+    });
+    fileInput.addEventListener('change', () => {
+        addBatchFiles(Array.from(fileInput.files));
+        fileInput.value = '';
+    });
+}
+
+function addBatchFiles(files) {
+    files.forEach(f => {
+        if (batchFiles.length >= 20) return;
+        if (!batchFiles.find(bf => bf.name === f.name)) {
+            batchFiles.push(f);
+        }
+    });
+    renderBatchFileList();
+}
+
+function removeBatchFile(index) {
+    batchFiles.splice(index, 1);
+    renderBatchFileList();
+}
+
+function renderBatchFileList() {
+    const container = document.getElementById('batchFileList');
+    if (!container) return;
+
+    if (batchFiles.length === 0) {
+        container.innerHTML = '';
+        return;
+    }
+
+    container.innerHTML = batchFiles.map((f, i) => `
+        <div class="batch-file-item">
+            <span class="batch-file-name">${escapeHtml(f.name)}</span>
+            <span class="batch-file-size">${(f.size / 1024).toFixed(1)} KB</span>
+            <button class="batch-file-remove" onclick="removeBatchFile(${i})" title="Remove">&times;</button>
+        </div>
+    `).join('');
+}
+
+async function runBatchAnalysis() {
+    if (batchFiles.length < 2) {
+        alert('Please add at least 2 files for batch analysis.');
+        return;
+    }
+
+    const btn = document.getElementById('batchAnalyzeBtn');
+    const resultsSection = document.getElementById('batchResults');
+    const summaryGrid = document.getElementById('batchSummaryGrid');
+    const tableWrap = document.getElementById('batchResultsTable');
+    const matrixWrap = document.getElementById('batchMatrix');
+    const suspiciousWrap = document.getElementById('batchSuspicious');
+    const summaryEl = document.getElementById('batchSummary');
+
+    btn.disabled = true;
+    btn.textContent = 'Analyzing files...';
+    resultsSection.classList.remove('hidden');
+    summaryGrid.innerHTML = '<p class="heatmap-placeholder">Processing batch…</p>';
+    tableWrap.innerHTML = '';
+    matrixWrap.innerHTML = '';
+    suspiciousWrap.innerHTML = '';
+
+    try {
+        const formData = new FormData();
+        batchFiles.forEach(f => formData.append('files', f));
+
+        const resp = await fetchWithRetry('http://localhost:5000/batch-analyze', {
+            method: 'POST', body: formData, mode: 'cors'
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Batch analysis failed');
+
+        // Summary
+        const s = data.summary;
+        summaryEl.textContent = `${s.total_files} files analyzed in ${s.batch_time}s`;
+        summaryGrid.innerHTML = `
+            <div class="batch-stat"><span class="batch-stat-value">${s.total_files}</span><span class="batch-stat-label">Files</span></div>
+            <div class="batch-stat"><span class="batch-stat-value batch-ai">${s.ai_detected}</span><span class="batch-stat-label">AI Detected</span></div>
+            <div class="batch-stat"><span class="batch-stat-value batch-human">${s.human_detected}</span><span class="batch-stat-label">Human</span></div>
+            <div class="batch-stat"><span class="batch-stat-value">${data.suspicious_pairs.length}</span><span class="batch-stat-label">Similar Pairs</span></div>
+        `;
+
+        // Results table
+        let tableHtml = '<table class="batch-table"><thead><tr><th>File</th><th>AI %</th><th>PPL</th><th>Burst</th><th>Risk</th><th>Words</th></tr></thead><tbody>';
+        data.results.forEach(r => {
+            const riskColors = { low: 'var(--success)', medium: 'var(--warning)', high: 'var(--danger)' };
+            const riskColor = riskColors[r.risk_level] || 'var(--muted)';
+            tableHtml += `<tr>
+                <td class="batch-td-name">${escapeHtml(r.filename)}</td>
+                <td style="color:${riskColor};font-weight:700;">${r.ai_probability != null ? r.ai_probability + '%' : r.error || '—'}</td>
+                <td>${r.perplexity != null ? r.perplexity.toFixed(1) : '—'}</td>
+                <td>${r.burstiness != null ? r.burstiness.toFixed(4) : '—'}</td>
+                <td><span class="batch-risk-badge" style="background:${riskColor}33;color:${riskColor};border-color:${riskColor};">${(r.risk_level || '—').toUpperCase()}</span></td>
+                <td>${r.word_count || '—'}</td>
+            </tr>`;
+        });
+        tableHtml += '</tbody></table>';
+        tableWrap.innerHTML = tableHtml;
+
+        // Similarity matrix
+        const fnames = data.filenames;
+        const matrix = data.similarity_matrix;
+        let matrixHtml = '<div class="matrix-scroll"><table class="matrix-table"><thead><tr><th></th>';
+        fnames.forEach((f, i) => { matrixHtml += `<th class="matrix-header" title="${f}">F${i + 1}</th>`; });
+        matrixHtml += '</tr></thead><tbody>';
+        matrix.forEach((row, i) => {
+            matrixHtml += `<tr><td class="matrix-row-header" title="${fnames[i]}">F${i + 1}</td>`;
+            row.forEach((val, j) => {
+                const bg = i === j ? '#e8d8b7' : val >= 70 ? '#f6b8a4' : val >= 40 ? '#f1e0a3' : val >= 20 ? '#e0f0e0' : 'transparent';
+                matrixHtml += `<td class="matrix-cell" style="background:${bg};" title="${fnames[i]} vs ${fnames[j]}: ${val}%">${val}%</td>`;
+            });
+            matrixHtml += '</tr>';
+        });
+        matrixHtml += '</tbody></table></div>';
+        matrixHtml += '<div class="matrix-legend"><span>F1-F' + fnames.length + ' = ' + fnames.map((f, i) => `F${i+1}: ${f}`).join(', ') + '</span></div>';
+        matrixWrap.innerHTML = matrixHtml;
+
+        // Suspicious pairs
+        if (data.suspicious_pairs.length > 0) {
+            let suspHtml = '<div class="suspicious-title">⚠️ Suspicious Pairs (≥40% similarity):</div>';
+            data.suspicious_pairs.forEach(p => {
+                const color = p.similarity >= 70 ? 'var(--danger)' : 'var(--warning)';
+                suspHtml += `
+                    <div class="suspicious-pair">
+                        <span class="suspicious-files">${escapeHtml(p.file1)} ↔ ${escapeHtml(p.file2)}</span>
+                        <span class="suspicious-sim" style="color:${color};">${p.similarity}%</span>
+                    </div>
+                `;
+            });
+            suspiciousWrap.innerHTML = suspHtml;
+        }
+
+    } catch (err) {
+        summaryGrid.innerHTML = `<p class="heatmap-placeholder" style="color:var(--danger);">${err.message}</p>`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Analyze All Files';
     }
 }

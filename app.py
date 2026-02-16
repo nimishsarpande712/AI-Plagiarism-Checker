@@ -1627,6 +1627,386 @@ def model_stats():
     return jsonify(get_learning_stats())
 
 
+# ────────────────────────────────────────────
+# Feature: Cross-Document Plagiarism Ring Detection
+# ────────────────────────────────────────────
+
+@app.route('/cross-check', methods=['POST', 'OPTIONS'])
+def cross_check():
+    """Compare current text against all stored analyses to find similar documents."""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    try:
+        data = request.get_json()
+        if not data or 'text' not in data:
+            return jsonify({"error": "No text provided"}), 400
+
+        text = data['text'].strip()
+        if len(text) < 50:
+            return jsonify({"error": "Text too short for cross-document check"}), 400
+
+        threshold = float(data.get('threshold', 0.3))
+        exclude_id = data.get('exclude_id')
+
+        stored = db.get_stored_texts(limit=100, exclude_id=exclude_id)
+        if not stored:
+            return jsonify({
+                "matches": [],
+                "total_compared": 0,
+                "message": "No documents in the database to compare against."
+            })
+
+        matches = []
+        for doc in stored:
+            stored_text = doc.get('input_text', '')
+            if not stored_text or len(stored_text) < 30:
+                continue
+
+            similarity = calculate_cosine_similarity(text, stored_text)
+            if similarity >= threshold:
+                matches.append({
+                    "id": doc.get('id'),
+                    "similarity": round(similarity * 100, 1),
+                    "date": doc.get('created_at'),
+                    "snippet": stored_text[:200] + ('...' if len(stored_text) > 200 else ''),
+                    "source": doc.get('input_source', 'paste'),
+                    "filename": doc.get('original_filename'),
+                    "was_ai": doc.get('is_ai_generated', False),
+                    "word_count": doc.get('word_count', len(stored_text.split())),
+                })
+
+        matches.sort(key=lambda x: x['similarity'], reverse=True)
+
+        return jsonify({
+            "matches": matches[:20],
+            "total_compared": len(stored),
+            "threshold": threshold * 100,
+            "ring_detected": len(matches) >= 2,
+        })
+
+    except Exception as e:
+        logger.error(f"Cross-check error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ────────────────────────────────────────────
+# Feature: Community Feedback & Calibration
+# ────────────────────────────────────────────
+
+@app.route('/feedback', methods=['POST', 'OPTIONS'])
+def submit_feedback():
+    """Submit user feedback on an analysis result."""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    try:
+        data = request.get_json()
+        if not data or 'analysis_id' not in data:
+            return jsonify({"error": "No analysis_id provided"}), 400
+
+        analysis_id = data['analysis_id']
+        is_correct = data.get('is_correct', True)
+        comment = data.get('comment', '')
+
+        user_id = _get_user_id_from_request()
+        session_id = data.get('session_id') or request.headers.get('X-Session-Id')
+
+        result = db.submit_feedback(
+            analysis_id=analysis_id,
+            is_correct=is_correct,
+            user_id=user_id,
+            session_id=session_id,
+            comment=comment,
+        )
+
+        return jsonify({
+            "success": result is not None,
+            "message": "Thank you for your feedback!" if result else "Feedback could not be saved (table may not exist)."
+        })
+
+    except Exception as e:
+        logger.error(f"Feedback error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/feedback/stats', methods=['GET'])
+def feedback_stats():
+    """Get community calibration accuracy stats."""
+    stats = db.get_feedback_stats()
+    return jsonify(stats)
+
+
+# ────────────────────────────────────────────
+# Feature: Side-by-Side Text Comparison
+# ────────────────────────────────────────────
+
+@app.route('/compare', methods=['POST', 'OPTIONS'])
+def compare_texts():
+    """Compare two texts side by side for plagiarism detection."""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        text1 = (data.get('text1') or '').strip()
+        text2 = (data.get('text2') or '').strip()
+
+        if not text1 or not text2:
+            return jsonify({"error": "Both text1 and text2 are required"}), 400
+        if len(text1) < 30 or len(text2) < 30:
+            return jsonify({"error": "Both texts must be at least 30 characters"}), 400
+
+        if not load_models():
+            return jsonify({"error": "Models not loaded"}), 500
+
+        from nltk.tokenize import sent_tokenize
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
+
+        # Overall similarity
+        overall_similarity = calculate_cosine_similarity(text1, text2)
+
+        # Sentence-level matching
+        sents1 = [s.strip() for s in sent_tokenize(text1) if s.strip()]
+        sents2 = [s.strip() for s in sent_tokenize(text2) if s.strip()]
+
+        sentence_matches = []
+        matched_indices_2 = set()
+
+        for i, s1 in enumerate(sents1):
+            best_sim = 0.0
+            best_j = -1
+            for j, s2 in enumerate(sents2):
+                sim = calculate_cosine_similarity(s1, s2)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_j = j
+
+            match_data = {
+                "index1": i,
+                "text1": s1,
+                "best_similarity": round(best_sim * 100, 1),
+            }
+            if best_sim >= 0.4 and best_j >= 0:
+                match_data["index2"] = best_j
+                match_data["text2"] = sents2[best_j]
+                match_data["status"] = "high_match" if best_sim >= 0.7 else "partial_match"
+                matched_indices_2.add(best_j)
+            else:
+                match_data["status"] = "unique"
+            sentence_matches.append(match_data)
+
+        # Find unique sentences in text2 (not matched by any text1 sentence)
+        unique_in_text2 = []
+        for j, s2 in enumerate(sents2):
+            if j not in matched_indices_2:
+                unique_in_text2.append({"index2": j, "text2": s2})
+
+        # Statistics
+        high_matches = sum(1 for m in sentence_matches if m['status'] == 'high_match')
+        partial_matches = sum(1 for m in sentence_matches if m['status'] == 'partial_match')
+        unique_count = sum(1 for m in sentence_matches if m['status'] == 'unique')
+
+        return jsonify({
+            "overall_similarity": round(overall_similarity * 100, 1),
+            "sentence_matches": sentence_matches,
+            "unique_in_text2": unique_in_text2,
+            "stats": {
+                "text1_sentences": len(sents1),
+                "text2_sentences": len(sents2),
+                "high_matches": high_matches,
+                "partial_matches": partial_matches,
+                "unique_in_text1": unique_count,
+                "unique_in_text2": len(unique_in_text2),
+                "text1_words": len(text1.split()),
+                "text2_words": len(text2.split()),
+            },
+            "verdict": (
+                "High plagiarism detected" if overall_similarity >= 0.7
+                else "Moderate similarity found" if overall_similarity >= 0.4
+                else "Texts appear to be original"
+            ),
+        })
+
+    except Exception as e:
+        logger.error(f"Compare error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ────────────────────────────────────────────
+# Feature: Batch Analysis
+# ────────────────────────────────────────────
+
+@app.route('/batch-analyze', methods=['POST', 'OPTIONS'])
+def batch_analyze():
+    """Analyze multiple files/texts and return comparative results."""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    try:
+        # Handle multipart form data (file uploads)
+        texts = []
+        filenames = []
+
+        if request.content_type and 'multipart/form-data' in request.content_type:
+            files = request.files.getlist('files')
+            if not files:
+                return jsonify({"error": "No files provided"}), 400
+
+            for f in files:
+                fname = os.path.basename(f.filename)
+                content = f.read()
+                if not content:
+                    continue
+
+                try:
+                    if fname.lower().endswith('.pdf'):
+                        extracted = extract_text_from_pdf(content)
+                    elif fname.lower().endswith('.docx'):
+                        extracted = extract_text_from_doc(content)
+                    else:
+                        extracted = None
+                        for enc in ['utf-8', 'latin-1', 'cp1252']:
+                            try:
+                                extracted = content.decode(enc)
+                                break
+                            except UnicodeDecodeError:
+                                continue
+                    if extracted and extracted.strip():
+                        texts.append(extracted)
+                        filenames.append(fname)
+                except Exception as ex:
+                    logger.warning(f"Batch: failed to extract {fname}: {ex}")
+                    continue
+        else:
+            # JSON body with array of texts
+            data = request.get_json()
+            if not data or 'texts' not in data:
+                return jsonify({"error": "No texts provided"}), 400
+            for i, item in enumerate(data['texts']):
+                if isinstance(item, dict):
+                    texts.append(item.get('text', ''))
+                    filenames.append(item.get('filename', f'Text {i+1}'))
+                else:
+                    texts.append(str(item))
+                    filenames.append(f'Text {i+1}')
+
+        if len(texts) < 2:
+            return jsonify({"error": "At least 2 texts/files required for batch analysis"}), 400
+        if len(texts) > 20:
+            return jsonify({"error": "Maximum 20 files per batch"}), 400
+
+        # Ensure models are loaded
+        if not load_models():
+            return jsonify({"error": "Models not loaded"}), 500
+
+        import time as _time
+        batch_start = _time.time()
+
+        # Analyze each text individually
+        individual_results = []
+        for i, text in enumerate(texts):
+            try:
+                if len(text.strip()) < 50:
+                    individual_results.append({
+                        "filename": filenames[i],
+                        "error": "Text too short",
+                        "perplexity": None,
+                        "burstiness": None,
+                        "is_ai_generated": None,
+                        "ai_probability": None,
+                        "confidence": None,
+                        "word_count": len(text.split()),
+                    })
+                    continue
+
+                ppl, burst = get_perplexity_and_burstiness(text)
+                is_ai, conf, reasons, signals = assess_ai_likelihood(text, ppl, burst)
+                ai_score = signals.get('score', 0)
+
+                individual_results.append({
+                    "filename": filenames[i],
+                    "perplexity": round(ppl, 2),
+                    "burstiness": round(burst, 4),
+                    "is_ai_generated": is_ai,
+                    "ai_probability": round(ai_score * 100, 1),
+                    "confidence": round(conf * 100, 1),
+                    "reasons": reasons,
+                    "word_count": len(text.split()),
+                    "risk_level": "high" if ai_score >= 0.7 else ("medium" if ai_score >= 0.4 else "low"),
+                })
+            except Exception as ex:
+                individual_results.append({
+                    "filename": filenames[i],
+                    "error": str(ex),
+                    "perplexity": None,
+                    "burstiness": None,
+                    "is_ai_generated": None,
+                    "ai_probability": None,
+                    "confidence": None,
+                    "word_count": len(text.split()),
+                })
+
+        # Cross-similarity matrix between all documents
+        n = len(texts)
+        similarity_matrix = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(i + 1, n):
+                sim = calculate_cosine_similarity(texts[i], texts[j])
+                similarity_matrix[i][j] = round(sim * 100, 1)
+                similarity_matrix[j][i] = similarity_matrix[i][j]
+            similarity_matrix[i][i] = 100.0
+
+        # Flag outliers (documents significantly different from the group)
+        avg_similarities = []
+        for i in range(n):
+            others = [similarity_matrix[i][j] for j in range(n) if j != i]
+            avg_sim = sum(others) / len(others) if others else 0
+            avg_similarities.append(round(avg_sim, 1))
+
+        # Find suspicious pairs (high similarity between different documents)
+        suspicious_pairs = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                if similarity_matrix[i][j] >= 40:
+                    suspicious_pairs.append({
+                        "file1": filenames[i],
+                        "file2": filenames[j],
+                        "similarity": similarity_matrix[i][j],
+                    })
+        suspicious_pairs.sort(key=lambda x: x['similarity'], reverse=True)
+
+        batch_time = _time.time() - batch_start
+
+        # Summary statistics
+        ai_count = sum(1 for r in individual_results if r.get('is_ai_generated'))
+        human_count = sum(1 for r in individual_results if r.get('is_ai_generated') is False)
+        error_count = sum(1 for r in individual_results if 'error' in r)
+
+        return jsonify({
+            "results": individual_results,
+            "filenames": filenames,
+            "similarity_matrix": similarity_matrix,
+            "avg_similarities": avg_similarities,
+            "suspicious_pairs": suspicious_pairs,
+            "summary": {
+                "total_files": n,
+                "ai_detected": ai_count,
+                "human_detected": human_count,
+                "errors": error_count,
+                "batch_time": round(batch_time, 2),
+            },
+        })
+
+    except Exception as e:
+        logger.error(f"Batch analysis error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == '__main__':
     try:
         # Ensure all models are loaded before starting server

@@ -504,3 +504,161 @@ def get_global_stats() -> dict:
         "today_scans": today_count,
         "ai_detection_rate": round(ai_count / max(total_scans, 1) * 100, 1),
     }
+
+
+# ────────────────────────────────────────────
+# Cross-Document Plagiarism Ring Detection
+# ────────────────────────────────────────────
+
+@db_safe(default=[])
+def get_stored_texts(limit: int = 100, exclude_id: str = None) -> list:
+    """Fetch stored analysis texts for cross-document comparison.
+
+    Returns a list of dicts with id, input_text, created_at, input_source,
+    original_filename, is_ai_generated, word_count.
+    """
+    client = _get_client()
+    if not client:
+        return []
+
+    query = client.table("analyses").select(
+        "id, input_text, created_at, input_source, original_filename, "
+        "is_ai_generated, word_count"
+    ).order("created_at", desc=True).limit(limit)
+
+    if exclude_id:
+        query = query.neq("id", exclude_id)
+
+    response = query.execute()
+    return response.data or []
+
+
+# ────────────────────────────────────────────
+# Community Feedback & Calibration
+# ────────────────────────────────────────────
+
+@db_safe(default=None)
+def submit_feedback(analysis_id: str, is_correct: bool, user_id: str = None,
+                    session_id: str = None, comment: str = None) -> dict:
+    """Submit user feedback on whether an AI detection was correct.
+
+    Args:
+        analysis_id: The analysis the feedback is about.
+        is_correct: True if the user agrees with the detection result.
+        user_id: Authenticated user ID (optional).
+        session_id: Anonymous session ID (optional).
+        comment: Optional free-text comment.
+
+    Returns:
+        The inserted feedback row, or None on failure.
+    """
+    client = _get_client()
+    if not client:
+        return None
+
+    row = {
+        "analysis_id": analysis_id,
+        "is_correct": is_correct,
+        "user_id": user_id,
+        "session_id": session_id,
+        "comment": comment,
+    }
+
+    try:
+        response = client.table("feedback").insert(row).execute()
+        if response.data:
+            logger.info(f"Feedback saved for analysis {analysis_id}: correct={is_correct}")
+            return response.data[0]
+    except Exception as e:
+        logger.warning(f"Feedback table may not exist: {e}. Feedback not saved.")
+    return None
+
+
+@db_safe(default={})
+def get_feedback_stats() -> dict:
+    """Get aggregate accuracy statistics from user feedback.
+
+    Returns:
+        Dict with total_feedback, correct_count, accuracy_pct, trust_score.
+    """
+    client = _get_client()
+    if not client:
+        return {}
+
+    try:
+        # Total feedback
+        total_resp = client.table("feedback").select("id", count="exact").execute()
+        total = total_resp.count or 0
+
+        if total == 0:
+            return {"total_feedback": 0, "accuracy_pct": None, "trust_score": None}
+
+        # Correct feedback count
+        correct_resp = (
+            client.table("feedback")
+            .select("id", count="exact")
+            .eq("is_correct", True)
+            .execute()
+        )
+        correct = correct_resp.count or 0
+
+        accuracy = round(correct / max(total, 1) * 100, 1)
+
+        # Trust score: weighted by recency (more recent feedback counts more)
+        # Simple approach: overall accuracy with confidence interval
+        # Wilson score lower bound for 95% confidence
+        import math
+        z = 1.96  # 95% confidence
+        p_hat = correct / max(total, 1)
+        denominator = 1 + z * z / total
+        centre_adjusted_probability = p_hat + z * z / (2 * total)
+        adjusted_standard_deviation = math.sqrt((p_hat * (1 - p_hat) + z * z / (4 * total)) / total)
+        wilson_lower = (centre_adjusted_probability - z * adjusted_standard_deviation) / denominator
+        trust_score = round(max(0, wilson_lower) * 100, 1)
+
+        return {
+            "total_feedback": total,
+            "correct_count": correct,
+            "incorrect_count": total - correct,
+            "accuracy_pct": accuracy,
+            "trust_score": trust_score,
+        }
+    except Exception as e:
+        logger.warning(f"Could not compute feedback stats: {e}")
+        return {"total_feedback": 0, "accuracy_pct": None, "trust_score": None}
+
+
+# ────────────────────────────────────────────
+# Batch Analysis
+# ────────────────────────────────────────────
+
+@db_safe(default=None)
+def create_batch(name: str, file_count: int, user_id: str = None,
+                 session_id: str = None) -> dict:
+    """Create a batch analysis group.
+
+    Returns the inserted batch row with its ID.
+    """
+    client = _get_client()
+    if not client:
+        return None
+
+    batch_id = uuid.uuid4().hex[:16]
+    row = {
+        "batch_id": batch_id,
+        "name": name,
+        "file_count": file_count,
+        "user_id": user_id,
+        "session_id": session_id,
+        "status": "pending",
+    }
+
+    try:
+        response = client.table("batches").insert(row).execute()
+        if response.data:
+            logger.info(f"Batch created: {batch_id} with {file_count} files")
+            return response.data[0]
+    except Exception as e:
+        logger.warning(f"Batches table may not exist: {e}. Using in-memory batch.")
+    # Fallback: return virtual batch
+    return {"batch_id": batch_id, "name": name, "file_count": file_count, "status": "pending"}

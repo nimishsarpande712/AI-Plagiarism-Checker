@@ -74,21 +74,84 @@
                     </label>
                 </div>
 
-                <div class="textarea-wrap">
-                    <textarea id="textInput" placeholder="Paste text here or drop a file" aria-label="Text to analyze"></textarea>
-                    <div class="textarea-meta">
-                        <span id="charCounter">0 characters</span>
-                        <span id="uploadStatus" class="upload-status" aria-live="polite"></span>
+                <!-- Mode Tabs -->
+                <div class="mode-tabs" id="modeTabs">
+                    <button class="mode-tab active" data-mode="analyze" onclick="switchMode('analyze')">
+                        <span class="mode-icon">🔍</span> Analyze
+                    </button>
+                    <button class="mode-tab" data-mode="compare" onclick="switchMode('compare')">
+                        <span class="mode-icon">⚖</span> Compare Texts
+                    </button>
+                    <button class="mode-tab" data-mode="batch" onclick="switchMode('batch')">
+                        <span class="mode-icon">📦</span> Batch Analysis
+                    </button>
+                </div>
+
+                <!-- Analyze Mode (default) -->
+                <div class="mode-content active" id="modeAnalyze">
+                    <div class="textarea-wrap">
+                        <textarea id="textInput" placeholder="Paste text here or drop a file" aria-label="Text to analyze"></textarea>
+                        <div class="textarea-meta">
+                            <span id="charCounter">0 characters</span>
+                            <span id="uploadStatus" class="upload-status" aria-live="polite"></span>
+                        </div>
+                    </div>
+                    <div class="controls">
+                        <label for="fileInput" class="upload-button">
+                            <span class="upload-icon" aria-hidden="true"></span>
+                            <span>Upload File</span>
+                        </label>
+                        <input type="file" id="fileInput" accept=".txt,.docx,.pdf" hidden>
+                        <button id="analyzeBtn" class="primary" type="button">Analyze</button>
                     </div>
                 </div>
 
-                <div class="controls">
-                    <label for="fileInput" class="upload-button">
-                        <span class="upload-icon" aria-hidden="true"></span>
-                        <span>Upload File</span>
-                    </label>
-                    <input type="file" id="fileInput" accept=".txt,.docx,.pdf" hidden>
-                    <button id="analyzeBtn" class="primary" type="button">Analyze</button>
+                <!-- Compare Mode -->
+                <div class="mode-content" id="modeCompare">
+                    <div class="compare-grid">
+                        <div class="compare-pane">
+                            <label class="compare-label">Text 1 (Original)</label>
+                            <textarea id="compareText1" placeholder="Paste the original text here..." aria-label="Original text"></textarea>
+                            <div class="compare-upload-row">
+                                <label for="compareFile1" class="upload-button upload-sm">
+                                    <span class="upload-icon" aria-hidden="true"></span> Upload
+                                </label>
+                                <input type="file" id="compareFile1" accept=".txt,.docx,.pdf" hidden>
+                                <span id="compareStatus1" class="upload-status"></span>
+                            </div>
+                        </div>
+                        <div class="compare-divider">VS</div>
+                        <div class="compare-pane">
+                            <label class="compare-label">Text 2 (Suspect)</label>
+                            <textarea id="compareText2" placeholder="Paste the suspect text here..." aria-label="Suspect text"></textarea>
+                            <div class="compare-upload-row">
+                                <label for="compareFile2" class="upload-button upload-sm">
+                                    <span class="upload-icon" aria-hidden="true"></span> Upload
+                                </label>
+                                <input type="file" id="compareFile2" accept=".txt,.docx,.pdf" hidden>
+                                <span id="compareStatus2" class="upload-status"></span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="controls">
+                        <button id="compareBtn" class="primary" type="button" onclick="runComparison()">Compare Texts</button>
+                    </div>
+                </div>
+
+                <!-- Batch Mode -->
+                <div class="mode-content" id="modeBatch">
+                    <div class="batch-dropzone" id="batchDropzone">
+                        <p class="batch-dropzone-text">
+                            <span class="batch-dropzone-icon">📁</span>
+                            Drop multiple files here or click to select
+                        </p>
+                        <input type="file" id="batchFileInput" accept=".txt,.docx,.pdf" multiple hidden>
+                        <p class="batch-dropzone-hint">Supports .txt, .docx, .pdf · Max 20 files</p>
+                    </div>
+                    <div id="batchFileList" class="batch-file-list"></div>
+                    <div class="controls">
+                        <button id="batchAnalyzeBtn" class="primary" type="button" onclick="runBatchAnalysis()">Analyze All Files</button>
+                    </div>
                 </div>
             </section>
 
@@ -247,6 +310,68 @@
                     <div id="reportContent" class="report-content">
                         <p class="heatmap-placeholder">Generating report…</p>
                     </div>
+                </article>
+
+                <!-- Community Feedback -->
+                <article class="panel feedback-card" id="feedbackCard" style="grid-column: 1 / -1;">
+                    <div class="panel-title">
+                        <p class="eyebrow">Was this detection accurate?</p>
+                        <span class="panel-help" id="feedbackTrust"></span>
+                    </div>
+                    <div class="feedback-body">
+                        <p class="feedback-question">Help improve our AI detection by confirming or correcting this result.</p>
+                        <div class="feedback-buttons">
+                            <button class="feedback-btn feedback-correct" id="feedbackCorrectBtn" onclick="submitFeedback(true)" type="button">
+                                <span>👍</span> Correct
+                            </button>
+                            <button class="feedback-btn feedback-incorrect" id="feedbackIncorrectBtn" onclick="submitFeedback(false)" type="button">
+                                <span>👎</span> Incorrect
+                            </button>
+                        </div>
+                        <p class="feedback-status" id="feedbackStatus"></p>
+                    </div>
+                </article>
+
+                <!-- Cross-Document Plagiarism Ring -->
+                <article class="panel crossdoc-card" id="crossDocCard" style="grid-column: 1 / -1;">
+                    <div class="panel-title">
+                        <p class="eyebrow">Cross-Document Similarity</p>
+                        <span class="panel-help">Compared against stored documents</span>
+                    </div>
+                    <div id="crossDocContent" class="crossdoc-content">
+                        <p class="heatmap-placeholder">Checking for similar documents…</p>
+                    </div>
+                </article>
+            </section>
+
+            <!-- Compare Results (separate from main results) -->
+            <section id="compareResults" class="compare-results hidden">
+                <article class="panel" style="grid-column: 1 / -1;">
+                    <div class="panel-title">
+                        <p class="eyebrow">Comparison Results</p>
+                        <span class="panel-help" id="compareVerdict"></span>
+                    </div>
+                    <div class="compare-stats-grid" id="compareStatsGrid"></div>
+                    <div class="compare-similarity-bar" id="compareSimilarityBar"></div>
+                    <div class="compare-diff-view" id="compareDiffView"></div>
+                </article>
+            </section>
+
+            <!-- Batch Results (separate from main results) -->
+            <section id="batchResults" class="batch-results hidden">
+                <article class="panel" style="grid-column: 1 / -1;">
+                    <div class="panel-title">
+                        <p class="eyebrow">Batch Analysis Results</p>
+                        <span class="panel-help" id="batchSummary"></span>
+                    </div>
+                    <div id="batchSummaryGrid" class="batch-summary-grid"></div>
+                    <div id="batchResultsTable" class="batch-table-wrap"></div>
+                    <div class="panel-title" style="margin-top: 20px;">
+                        <p class="eyebrow">Cross-Similarity Matrix</p>
+                        <span class="panel-help">How similar each document is to others</span>
+                    </div>
+                    <div id="batchMatrix" class="batch-matrix-wrap"></div>
+                    <div id="batchSuspicious" class="batch-suspicious"></div>
                 </article>
             </section>
         </main>
