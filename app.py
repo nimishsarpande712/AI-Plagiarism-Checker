@@ -72,6 +72,7 @@ def download_nltk_resources():
         'punkt_tab': 'tokenizers/punkt_tab',
         'stopwords': 'corpora/stopwords',
         'averaged_perceptron_tagger': 'taggers/averaged_perceptron_tagger',
+        'averaged_perceptron_tagger_eng': 'taggers/averaged_perceptron_tagger_eng',
     }
     
     for resource, path in resource_paths.items():
@@ -765,6 +766,9 @@ def check():
 
         inference_time = _time.time() - start_time
         
+        # Voice consistency analysis (passive vs active)
+        voice_analysis = analyze_voice_consistency(text)
+
         # Enhanced metrics
         metrics = {
             "perplexity": perplexity,
@@ -775,6 +779,7 @@ def check():
             "readability": calculate_readability(text),
             "entropy": entropy,
             "token_count": total_tokens,
+            "voice_analysis": voice_analysis,
             "model_name": "GPT-2 + Heuristics" if (tokenizer is not None and model is not None) else "Heuristics (fallback)",
             "inference_time": round(inference_time, 3),
         }
@@ -1170,6 +1175,120 @@ def calculate_readability(text):
     except Exception as e:
         logger.error(f"Readability calculation error: {str(e)}")
         return 0.5
+
+
+def analyze_voice_consistency(text):
+    """Detect passive vs active voice ratio and flag sections with high passive voice.
+    
+    Uses POS tagging to identify passive constructions:
+    - Pattern: form of 'to be' (am/is/are/was/were/been/being) + past participle (VBN)
+    - Also detects 'get'-passives: get/got/gotten + VBN
+    
+    Returns a dict with:
+    - passive_ratio: float [0,1] — fraction of sentences containing passive voice
+    - active_ratio: float [0,1]
+    - total_sentences: int
+    - passive_count: int
+    - active_count: int
+    - flagged_sections: list of {text, index} for sentences with passive voice
+    - assessment: human-readable summary
+    """
+    try:
+        from nltk.tokenize import sent_tokenize, word_tokenize
+        from nltk import pos_tag
+        
+        sentences = [s.strip() for s in sent_tokenize(text) if s.strip()]
+        if not sentences:
+            return _empty_voice_result()
+        
+        # Forms of 'to be' that precede past participles in passive constructions
+        be_forms = {'am', 'is', 'are', 'was', 'were', 'been', 'being', 'be'}
+        # Get-passives
+        get_forms = {'get', 'gets', 'got', 'gotten', 'getting'}
+        
+        passive_sentences = []
+        active_sentences = []
+        flagged_sections = []
+        
+        for idx, sent in enumerate(sentences):
+            try:
+                words = word_tokenize(sent)
+                tagged = pos_tag(words)
+                
+                is_passive = False
+                for i in range(len(tagged) - 1):
+                    word_lower = tagged[i][0].lower()
+                    next_tag = tagged[i + 1][1]
+                    
+                    # Check: be-form + VBN (past participle)
+                    if word_lower in be_forms and next_tag == 'VBN':
+                        is_passive = True
+                        break
+                    # Check: get-form + VBN
+                    if word_lower in get_forms and next_tag == 'VBN':
+                        is_passive = True
+                        break
+                    # Check: be-form + adverb + VBN (e.g., "was quickly completed")
+                    if (word_lower in be_forms and tagged[i + 1][1] in ('RB', 'RBR', 'RBS')
+                            and i + 2 < len(tagged) and tagged[i + 2][1] == 'VBN'):
+                        is_passive = True
+                        break
+                
+                if is_passive:
+                    passive_sentences.append(sent)
+                    flagged_sections.append({
+                        'text': sent,
+                        'index': idx,
+                    })
+                else:
+                    active_sentences.append(sent)
+                    
+            except Exception:
+                # If POS tagging fails for a sentence, treat as active
+                active_sentences.append(sent)
+        
+        total = len(sentences)
+        passive_count = len(passive_sentences)
+        active_count = len(active_sentences)
+        passive_ratio = passive_count / max(total, 1)
+        active_ratio = active_count / max(total, 1)
+        
+        # Generate assessment
+        if passive_ratio >= 0.5:
+            assessment = f'High passive voice usage ({passive_count}/{total} sentences). This is common in AI-generated text. Consider rewriting flagged sentences in active voice for more natural, engaging prose.'
+        elif passive_ratio >= 0.3:
+            assessment = f'Moderate passive voice ({passive_count}/{total} sentences). Some sections could be strengthened by converting to active voice.'
+        elif passive_ratio >= 0.15:
+            assessment = f'Occasional passive voice ({passive_count}/{total} sentences). Usage is within normal range for academic/formal writing.'
+        else:
+            assessment = f'Mostly active voice ({active_count}/{total} sentences). Writing style appears natural and direct.'
+        
+        return {
+            'passive_ratio': round(passive_ratio, 4),
+            'active_ratio': round(active_ratio, 4),
+            'total_sentences': total,
+            'passive_count': passive_count,
+            'active_count': active_count,
+            'flagged_sections': flagged_sections[:20],  # Limit to 20 flagged sentences
+            'assessment': assessment,
+        }
+        
+    except Exception as e:
+        logger.error(f"Voice consistency analysis error: {e}")
+        return _empty_voice_result()
+
+
+def _empty_voice_result():
+    """Return default voice analysis result when analysis cannot run."""
+    return {
+        'passive_ratio': 0.0,
+        'active_ratio': 0.0,
+        'total_sentences': 0,
+        'passive_count': 0,
+        'active_count': 0,
+        'flagged_sections': [],
+        'assessment': 'Insufficient text for voice analysis.',
+    }
 
 
 @app.route('/sentence-analysis', methods=['POST', 'OPTIONS'])

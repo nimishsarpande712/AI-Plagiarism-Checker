@@ -412,6 +412,16 @@ textarea:focus { outline: none; }
 }
 .chart-plotly .modebar-btn {
     font-size: 16px !important;
+    color: #1a1a1a !important;
+}
+.chart-plotly .modebar-btn path {
+    fill: #1a1a1a !important;
+}
+.chart-plotly .modebar-btn:hover {
+    color: #000 !important;
+}
+.chart-plotly .modebar-btn:hover path {
+    fill: #000 !important;
 }
 .chart-plotly .modebar-group {
     background: rgba(252, 236, 211, 0.9) !important;
@@ -515,6 +525,156 @@ textarea:focus { outline: none; }
     box-shadow: 3px 3px 0 var(--border);
 }
 .suggestion-item strong { display: block; margin-bottom: 4px; }
+
+/* ─── Voice Consistency Card ─── */
+.voice-card { overflow: hidden; }
+
+.voice-summary { margin-bottom: 12px; }
+
+.voice-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    text-align: center;
+}
+
+.voice-stat {
+    background: var(--bg);
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.voice-stat-value {
+    font-size: 1.4rem;
+    font-weight: 800;
+    color: var(--fg);
+}
+
+.voice-stat-value.voice-passive { color: var(--danger); }
+.voice-stat-value.voice-active { color: var(--success); }
+
+.voice-stat-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.voice-ratio-bar { margin-bottom: 12px; }
+
+.voice-bar-track {
+    display: flex;
+    height: 14px;
+    border-radius: 20px;
+    overflow: hidden;
+    border: 2px solid var(--border);
+    background: var(--bg);
+}
+
+.voice-bar-segment {
+    height: 100%;
+    transition: width 0.5s ease;
+}
+
+.voice-bar-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.78rem;
+    font-weight: 700;
+    margin-top: 6px;
+}
+
+.voice-assessment-text {
+    font-size: 0.88rem;
+    line-height: 1.5;
+    color: var(--fg);
+    padding: 10px 14px;
+    background: var(--bg);
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 10px;
+}
+
+.voice-flagged-toggle {
+    background: none;
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-weight: 700;
+    font-size: 0.85rem;
+    cursor: pointer;
+    color: var(--fg);
+    width: 100%;
+    text-align: left;
+    transition: background 0.15s;
+}
+
+.voice-flagged-toggle:hover {
+    background: var(--bg);
+}
+
+.toggle-arrow {
+    display: inline-block;
+    width: 1em;
+    font-size: 0.9rem;
+}
+
+.voice-flagged-list {
+    margin-top: 8px;
+    display: grid;
+    gap: 6px;
+    max-height: 260px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.voice-flagged-item {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 8px 12px;
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg);
+    border-left: 4px solid var(--danger);
+    font-size: 0.85rem;
+    line-height: 1.45;
+}
+
+.voice-flagged-index {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--danger);
+    color: #fff;
+    font-weight: 800;
+    font-size: 0.72rem;
+    border-radius: 50%;
+}
+
+.voice-flagged-text {
+    color: var(--fg);
+}
+
+.voice-placeholder {
+    color: var(--muted);
+    font-style: italic;
+    text-align: center;
+    padding: 20px;
+}
+
+@media (max-width: 600px) {
+    .voice-stats { grid-template-columns: repeat(2, 1fr); }
+}
 
 .error-card {
     display: grid;

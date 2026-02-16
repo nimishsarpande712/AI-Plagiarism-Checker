@@ -32,7 +32,11 @@ const ui = {
     suggestionList: document.getElementById('suggestionList'),
     heatmapContainer: document.getElementById('heatmapContainer'),
     heatmapToggle: document.getElementById('heatmapToggle'),
-    heatmapCard: document.getElementById('heatmapCard')
+    heatmapCard: document.getElementById('heatmapCard'),
+    voiceSummary: document.getElementById('voiceSummary'),
+    voiceRatioBar: document.getElementById('voiceRatioBar'),
+    voiceAssessment: document.getElementById('voiceAssessment'),
+    voiceFlagged: document.getElementById('voiceFlagged'),
 };
 
 let splineLoaded = false;
@@ -564,6 +568,12 @@ function renderForensics(result) {
     const perpVal = typeof result.perplexity === 'number' ? result.perplexity : 60;
     const languagePredictability = base(Math.max(0, 100 - (perpVal / 1.5)));
 
+    // Passive voice ratio as a forensic signal
+    const voiceData = result.voice_analysis;
+    const passivePercent = voiceData && typeof voiceData.passive_ratio === 'number'
+        ? base(voiceData.passive_ratio * 100)
+        : null;
+
     const bars = result.paragraph_probabilities || result.streamlit?.paragraph_probabilities;
     const derived = [
         { label: 'Paragraph AI Probability', value: aiProbability },
@@ -571,6 +581,10 @@ function renderForensics(result) {
         { label: 'Repetition Intensity', value: repetitionIntensity },
         { label: 'Language Predictability', value: languagePredictability }
     ];
+
+    if (passivePercent !== null) {
+        derived.push({ label: 'Passive Voice Ratio', value: passivePercent });
+    }
 
     const items = Array.isArray(bars) && bars.length
         ? bars.map((v, i) => ({ label: `Paragraph ${i + 1}`, value: base(v) })).concat(derived.slice(1))
@@ -596,6 +610,101 @@ function renderForensics(result) {
         row.appendChild(track);
         ui.forensicList.appendChild(row);
     });
+}
+
+function renderVoiceAnalysis(voice) {
+    if (!ui.voiceSummary) return;
+
+    // Reset
+    ui.voiceSummary.innerHTML = '';
+    ui.voiceRatioBar.innerHTML = '';
+    ui.voiceAssessment.innerHTML = '';
+    ui.voiceFlagged.innerHTML = '';
+
+    if (!voice || typeof voice.passive_ratio !== 'number') {
+        ui.voiceSummary.innerHTML = '<p class="voice-placeholder">Voice analysis unavailable.</p>';
+        return;
+    }
+
+    const passivePct = Math.round(voice.passive_ratio * 100);
+    const activePct = Math.round(voice.active_ratio * 100);
+
+    // Summary stats
+    ui.voiceSummary.innerHTML = `
+        <div class="voice-stats">
+            <div class="voice-stat">
+                <span class="voice-stat-value voice-passive">${passivePct}%</span>
+                <span class="voice-stat-label">Passive</span>
+            </div>
+            <div class="voice-stat">
+                <span class="voice-stat-value voice-active">${activePct}%</span>
+                <span class="voice-stat-label">Active</span>
+            </div>
+            <div class="voice-stat">
+                <span class="voice-stat-value">${voice.total_sentences}</span>
+                <span class="voice-stat-label">Sentences</span>
+            </div>
+            <div class="voice-stat">
+                <span class="voice-stat-value voice-passive">${voice.passive_count}</span>
+                <span class="voice-stat-label">Passive Hits</span>
+            </div>
+        </div>
+    `;
+
+    // Ratio bar (stacked horizontal bar)
+    const passiveColor = passivePct >= 50 ? 'var(--danger)' : passivePct >= 30 ? 'var(--warning)' : 'var(--success)';
+    ui.voiceRatioBar.innerHTML = `
+        <div class="voice-bar-track">
+            <div class="voice-bar-segment voice-bar-active" style="width: ${activePct}%; background: var(--success);"></div>
+            <div class="voice-bar-segment voice-bar-passive" style="width: ${passivePct}%; background: ${passiveColor};"></div>
+        </div>
+        <div class="voice-bar-labels">
+            <span style="color: var(--success);">● Active (${voice.active_count})</span>
+            <span style="color: ${passiveColor};">● Passive (${voice.passive_count})</span>
+        </div>
+    `;
+
+    // Assessment text
+    ui.voiceAssessment.innerHTML = `<p class="voice-assessment-text">${voice.assessment}</p>`;
+
+    // Flagged passive sentences (collapsible)
+    if (voice.flagged_sections && voice.flagged_sections.length > 0) {
+        const toggleId = 'voiceFlaggedToggle';
+        let html = `
+            <button class="voice-flagged-toggle" id="${toggleId}" type="button" aria-expanded="false">
+                <span class="toggle-arrow">▸</span> Show ${voice.flagged_sections.length} passive sentence${voice.flagged_sections.length > 1 ? 's' : ''}
+            </button>
+            <div class="voice-flagged-list" id="voiceFlaggedList" style="display: none;">
+        `;
+        voice.flagged_sections.forEach((item, i) => {
+            html += `
+                <div class="voice-flagged-item">
+                    <span class="voice-flagged-index">${item.index + 1}</span>
+                    <span class="voice-flagged-text">${escapeHtml(item.text)}</span>
+                </div>
+            `;
+        });
+        html += '</div>';
+        ui.voiceFlagged.innerHTML = html;
+
+        // Toggle handler
+        document.getElementById(toggleId).addEventListener('click', function () {
+            const list = document.getElementById('voiceFlaggedList');
+            const expanded = this.getAttribute('aria-expanded') === 'true';
+            this.setAttribute('aria-expanded', !expanded);
+            this.querySelector('.toggle-arrow').textContent = expanded ? '▸' : '▾';
+            list.style.display = expanded ? 'none' : 'block';
+            this.childNodes[1].textContent = expanded
+                ? ` Show ${voice.flagged_sections.length} passive sentence${voice.flagged_sections.length > 1 ? 's' : ''}`
+                : ` Hide ${voice.flagged_sections.length} passive sentence${voice.flagged_sections.length > 1 ? 's' : ''}`;
+        });
+    }
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
 }
 
 function formatNumber(value, decimals = 2) {
@@ -631,6 +740,7 @@ function updateResults(result) {
     ui.entropy.textContent = result.entropy ? formatNumber(result.entropy, 3) : '—';
 
     renderForensics(result);
+    renderVoiceAnalysis(result.voice_analysis);
     renderGaugeChart(aiProbability);
     renderRadarChart(result);
     renderFrequencyChart(result.streamlit?.word_frequency);
@@ -987,6 +1097,8 @@ function renderReport(result, aiProbability, humanProbability, confidence, reaso
                 <div class="report-metric"><span class="label">Complexity</span><span class="value">${result.complexity != null ? Math.round(result.complexity * 100) + '%' : '—'}</span></div>
                 <div class="report-metric"><span class="label">Variability</span><span class="value">${result.variability != null ? Math.round(result.variability * 100) + '%' : '—'}</span></div>
                 <div class="report-metric"><span class="label">Readability</span><span class="value">${result.readability != null ? Math.round(result.readability * 100) + '%' : '—'}</span></div>
+                <div class="report-metric"><span class="label">Passive Voice</span><span class="value">${result.voice_analysis ? Math.round(result.voice_analysis.passive_ratio * 100) + '%' : '—'}</span></div>
+                <div class="report-metric"><span class="label">Active Voice</span><span class="value">${result.voice_analysis ? Math.round(result.voice_analysis.active_ratio * 100) + '%' : '—'}</span></div>
             </div>
         </div>
 
