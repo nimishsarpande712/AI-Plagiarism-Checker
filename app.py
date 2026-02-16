@@ -799,6 +799,11 @@ def check():
         except Exception as learn_err:
             logger.warning(f"Learning update failed (non-critical): {learn_err}")
 
+        # Generate a local analysis ID upfront so frontend always has one
+        import uuid as _uuid_mod
+        local_analysis_id = str(_uuid_mod.uuid4())
+        result_payload["analysis_id"] = local_analysis_id
+
         # Save to database (non-blocking, best-effort)
         session_id = data.get('session_id') or request.headers.get('X-Session-Id')
         input_source = data.get('input_source', 'paste')
@@ -814,8 +819,8 @@ def check():
             user_id=user_id,
         )
 
-        # Include the analysis ID in the response so frontend can reference it
-        if saved:
+        # If DB returned an ID, use it instead of our local one
+        if saved and saved.get("id"):
             result_payload["analysis_id"] = saved.get("id")
 
         # Log usage

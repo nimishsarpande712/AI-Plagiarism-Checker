@@ -1755,7 +1755,12 @@ async function runCrossDocCheck(text, excludeId) {
 let feedbackSubmitted = false;
 
 async function submitFeedback(isCorrect) {
-    if (feedbackSubmitted || !lastAnalysisId) return;
+    if (feedbackSubmitted) return;
+    if (!lastAnalysisId) {
+        document.getElementById('feedbackStatus').textContent = 'Run an analysis first before giving feedback.';
+        document.getElementById('feedbackStatus').style.color = 'var(--warning)';
+        return;
+    }
 
     const statusEl = document.getElementById('feedbackStatus');
     const correctBtn = document.getElementById('feedbackCorrectBtn');
