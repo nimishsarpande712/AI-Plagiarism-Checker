@@ -1,3 +1,8 @@
+// ─── API Configuration ───
+// In production, set window.__API_BASE__ before this script loads,
+// or it defaults to the current origin (works when backend is same-origin or proxied).
+const API_BASE = window.__API_BASE__ || '';
+
 const ui = {
     textInput: document.getElementById('textInput'),
     fileInput: document.getElementById('fileInput'),
@@ -125,7 +130,7 @@ function updateAuthUI() {
 async function verifyAuth() {
     if (!authToken) return;
     try {
-        const resp = await fetch('http://localhost:5000/auth/me', {
+        const resp = await fetch('${API_BASE}/auth/me', {
             headers: { 'Authorization': `Bearer ${authToken}` }
         });
         if (!resp.ok) {
@@ -218,7 +223,7 @@ async function handleLogin(e) {
     btn.textContent = 'Signing in...';
 
     try {
-        const resp = await fetch('http://localhost:5000/auth/login', {
+        const resp = await fetch('${API_BASE}/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password }),
@@ -258,7 +263,7 @@ async function handleSignup(e) {
     btn.textContent = 'Creating account...';
 
     try {
-        const resp = await fetch('http://localhost:5000/auth/signup', {
+        const resp = await fetch('${API_BASE}/auth/signup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password, full_name: fullName }),
@@ -292,7 +297,7 @@ async function handleSignup(e) {
 
 async function handleLogout() {
     try {
-        await fetch('http://localhost:5000/auth/logout', {
+        await fetch('${API_BASE}/auth/logout', {
             method: 'POST',
             headers: getAuthHeaders(),
         });
@@ -410,7 +415,7 @@ async function checkPlagiarism() {
             formData.append('file', file);
             ui.uploadStatus.textContent = 'Uploading file…';
 
-            const response = await fetchWithRetry('http://localhost:5000/upload', {
+            const response = await fetchWithRetry('${API_BASE}/upload', {
                 method: 'POST',
                 body: formData,
                 mode: 'cors'
@@ -439,8 +444,8 @@ async function checkPlagiarism() {
         setLoading(true);
 
         const [plagiarismResult, streamlitResult] = await Promise.all([
-            fetchAnalysis('http://localhost:5000/check', payload),
-            fetchAnalysis('http://localhost:5000/streamlit-analysis', payload)
+            fetchAnalysis('${API_BASE}/check', payload),
+            fetchAnalysis('${API_BASE}/streamlit-analysis', payload)
         ]);
 
         const combined = { ...plagiarismResult, streamlit: streamlitResult };
@@ -1295,7 +1300,7 @@ async function renderHeatmap(text) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
 
-        const response = await fetch('http://localhost:5000/sentence-analysis', {
+        const response = await fetch('${API_BASE}/sentence-analysis', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
             body: JSON.stringify({ text }),
@@ -1459,7 +1464,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // ─── History Panel ───
 async function loadHistory() {
     try {
-        const response = await fetch(`http://localhost:5000/history?session_id=${SESSION_ID}&limit=10`, {
+        const response = await fetch(`${API_BASE}/history?session_id=${SESSION_ID}&limit=10`, {
             headers: getAuthHeaders()
         });
         const data = await response.json();
@@ -1519,7 +1524,7 @@ function renderHistory(items) {
 
 async function viewAnalysis(analysisId) {
     try {
-        const response = await fetch(`http://localhost:5000/history/${analysisId}`);
+        const response = await fetch(`${API_BASE}/history/${analysisId}`);
         const data = await response.json();
         if (data && data.input_text) {
             ui.textInput.value = data.input_text;
@@ -1537,7 +1542,7 @@ async function shareReport(analysisId) {
         return;
     }
     try {
-        const response = await fetch('http://localhost:5000/report', {
+        const response = await fetch('${API_BASE}/report', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ analysis_id: analysisId }),
@@ -1595,7 +1600,7 @@ async function uploadFileForCompare(fileInput, textArea, statusEl) {
     try {
         const formData = new FormData();
         formData.append('file', file);
-        const resp = await fetchWithRetry('http://localhost:5000/upload', {
+        const resp = await fetchWithRetry('${API_BASE}/upload', {
             method: 'POST', body: formData, mode: 'cors'
         });
         const data = await resp.json();
@@ -1637,7 +1642,7 @@ async function runComparison() {
     diffView.innerHTML = '';
 
     try {
-        const resp = await fetchWithRetry('http://localhost:5000/compare', {
+        const resp = await fetchWithRetry('${API_BASE}/compare', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text1, text2 }),
@@ -1732,7 +1737,7 @@ async function runCrossDocCheck(text, excludeId) {
     container.innerHTML = '<p class="heatmap-placeholder">Checking for similar documents…</p>';
 
     try {
-        const resp = await fetchWithRetry('http://localhost:5000/cross-check', {
+        const resp = await fetchWithRetry('${API_BASE}/cross-check', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ text, threshold: 0.3, exclude_id: excludeId }),
@@ -1806,7 +1811,7 @@ async function submitFeedback(isCorrect) {
     incorrectBtn.disabled = true;
 
     try {
-        const resp = await fetch('http://localhost:5000/feedback', {
+        const resp = await fetch('${API_BASE}/feedback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({
@@ -1841,7 +1846,7 @@ async function submitFeedback(isCorrect) {
 
 async function loadTrustScore() {
     try {
-        const resp = await fetch('http://localhost:5000/feedback/stats');
+        const resp = await fetch('${API_BASE}/feedback/stats');
         const data = await resp.json();
         const trustEl = document.getElementById('feedbackTrust');
         if (trustEl && data.total_feedback > 0) {
@@ -1944,7 +1949,7 @@ async function runBatchAnalysis() {
         const formData = new FormData();
         batchFiles.forEach(f => formData.append('files', f));
 
-        const resp = await fetchWithRetry('http://localhost:5000/batch-analyze', {
+        const resp = await fetchWithRetry('${API_BASE}/batch-analyze', {
             method: 'POST', body: formData, mode: 'cors'
         });
         const data = await resp.json();
