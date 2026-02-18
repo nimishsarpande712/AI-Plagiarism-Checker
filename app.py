@@ -47,8 +47,9 @@ _models_lock = threading.Lock()
 _stopwords_cache = None  # Cache stopwords to avoid repeated corpus access
 
 # ─── Adaptive Model Learning ───
-# Stores running statistics from each analysis to improve detection thresholds
-_learning_stats = {
+# Stores running statistics from each analysis to improve detection thresholds.
+# Persisted to Supabase so learning survives server restarts (production-ready).
+_learning_stats_default = {
     'total_analyses': 0,
     'ai_detected_count': 0,
     'perplexity_sum': 0.0,
@@ -61,7 +62,10 @@ _learning_stats = {
     'max_samples': 200,
     'threshold_adjustments': {},
 }
+_learning_stats = _learning_stats_default.copy()
+_learning_stats['samples'] = []
 _learning_lock = threading.Lock()
+_PERSIST_EVERY_N = 5  # Persist to DB every N analyses for efficiency
 
 # Download required NLTK resources with robust error handling
 def download_nltk_resources():
@@ -538,6 +542,7 @@ def _update_learning_stats(perplexity, burstiness, signals, is_ai):
     
     This accumulates statistics from each analysis to refine detection
     thresholds over time, making the model smarter with every file analyzed.
+    Persists to Supabase every _PERSIST_EVERY_N analyses for production durability.
     """
     global _learning_stats
     
@@ -575,6 +580,36 @@ def _update_learning_stats(perplexity, burstiness, signals, is_ai):
         logger.info(f"Model learning updated: {stats['total_analyses']} total analyses, "
                      f"{stats['ai_detected_count']} AI detected, "
                      f"avg PPL: {stats['perplexity_sum']/stats['total_analyses']:.1f}")
+
+        # Persist to Supabase periodically (non-blocking, best-effort)
+        if stats['total_analyses'] % _PERSIST_EVERY_N == 0:
+            try:
+                db.save_learning_stats(stats)
+            except Exception as e:
+                logger.warning(f"Failed to persist learning stats: {e}")
+
+
+def _load_learning_from_db():
+    """Load persisted learning stats from Supabase on server startup.
+    
+    If the model_learning table has data from previous runs, restore it
+    so the model keeps its accumulated knowledge across restarts.
+    """
+    global _learning_stats
+    try:
+        saved = db.load_learning_stats()
+        if saved and saved.get('total_analyses', 0) > 0:
+            with _learning_lock:
+                _learning_stats = saved
+                # Ensure all required keys exist
+                for k, v in _learning_stats_default.items():
+                    if k not in _learning_stats:
+                        _learning_stats[k] = v
+            logger.info(f"Restored learning: {saved['total_analyses']} analyses from DB")
+        else:
+            logger.info("No previous learning stats found — starting fresh")
+    except Exception as e:
+        logger.warning(f"Could not restore learning stats: {e}")
 
 
 def _recalculate_thresholds(stats):
@@ -1725,9 +1760,14 @@ def submit_feedback():
             comment=comment,
         )
 
+        # Feed correction back into learning: if user says "incorrect",
+        # the model's decision was wrong → log this for self-improvement
+        if result and not is_correct:
+            logger.info(f"User corrected analysis {analysis_id} — flagged as incorrect detection")
+
         return jsonify({
             "success": result is not None,
-            "message": "Thank you for your feedback!" if result else "Feedback could not be saved (table may not exist)."
+            "message": "Thank you for your feedback!" if result else "Feedback could not be saved."
         })
 
     except Exception as e:
@@ -2016,6 +2056,10 @@ if __name__ == '__main__':
     try:
         # Ensure all models are loaded before starting server
         logger.info("Starting Flask server...")
+
+        # Restore learning stats from Supabase (production persistence)
+        _load_learning_from_db()
+
         logger.info("Models loaded and ready")
         
         # Start the Flask application

@@ -556,21 +556,26 @@ def submit_feedback(analysis_id: str, is_correct: bool, user_id: str = None,
     if not client:
         return None
 
+    # Build row, omitting None values to avoid uuid column type issues
     row = {
-        "analysis_id": analysis_id,
-        "is_correct": is_correct,
-        "user_id": user_id,
-        "session_id": session_id,
-        "comment": comment,
+        "analysis_id": str(analysis_id),
+        "is_correct": bool(is_correct),
     }
+    if user_id:
+        row["user_id"] = str(user_id)
+    if session_id:
+        row["session_id"] = str(session_id)
+    if comment:
+        row["comment"] = str(comment)
 
     try:
         response = client.table("feedback").insert(row).execute()
         if response.data:
             logger.info(f"Feedback saved for analysis {analysis_id}: correct={is_correct}")
             return response.data[0]
+        logger.warning(f"Feedback insert returned no data for analysis {analysis_id}")
     except Exception as e:
-        logger.warning(f"Feedback table may not exist: {e}. Feedback not saved.")
+        logger.warning(f"Feedback save error: {e}")
     return None
 
 
@@ -626,6 +631,106 @@ def get_feedback_stats() -> dict:
     except Exception as e:
         logger.warning(f"Could not compute feedback stats: {e}")
         return {"total_feedback": 0, "accuracy_pct": None, "trust_score": None}
+
+
+# ────────────────────────────────────────────
+# Persistent Model Learning Stats
+# ────────────────────────────────────────────
+
+import json as _json_mod
+
+
+@db_safe(default=None)
+def save_learning_stats(stats_dict: dict) -> dict:
+    """Persist the adaptive model learning statistics to Supabase.
+
+    Uses a single-row upsert approach: the row with key='main' is always
+    updated so there's only ever one row in the model_learning table.
+
+    Args:
+        stats_dict: The full _learning_stats dict from app.py.
+
+    Returns:
+        The upserted row, or None on failure.
+    """
+    client = _get_client()
+    if not client:
+        return None
+
+    # Serialise to a JSON-safe structure
+    payload = {
+        "key": "main",
+        "total_analyses": stats_dict.get("total_analyses", 0),
+        "ai_detected_count": stats_dict.get("ai_detected_count", 0),
+        "perplexity_sum": stats_dict.get("perplexity_sum", 0.0),
+        "perplexity_sq_sum": stats_dict.get("perplexity_sq_sum", 0.0),
+        "burstiness_sum": stats_dict.get("burstiness_sum", 0.0),
+        "burstiness_sq_sum": stats_dict.get("burstiness_sq_sum", 0.0),
+        "ttr_sum": stats_dict.get("ttr_sum", 0.0),
+        "cv_sum": stats_dict.get("cv_sum", 0.0),
+        "max_samples": stats_dict.get("max_samples", 200),
+        "samples_json": _json_mod.dumps(stats_dict.get("samples", [])[-200:]),
+        "threshold_adjustments_json": _json_mod.dumps(stats_dict.get("threshold_adjustments", {})),
+    }
+
+    try:
+        response = (
+            client.table("model_learning")
+            .upsert(payload, on_conflict="key")
+            .execute()
+        )
+        if response.data:
+            logger.info(f"Learning stats persisted: {payload['total_analyses']} analyses")
+            return response.data[0]
+    except Exception as e:
+        logger.warning(f"Could not persist learning stats: {e}")
+    return None
+
+
+@db_safe(default=None)
+def load_learning_stats() -> dict:
+    """Load persisted learning stats from Supabase on startup.
+
+    Returns:
+        The full learning stats dict, or None if not found.
+    """
+    client = _get_client()
+    if not client:
+        return None
+
+    try:
+        response = (
+            client.table("model_learning")
+            .select("*")
+            .eq("key", "main")
+            .limit(1)
+            .execute()
+        )
+        if response.data and len(response.data) > 0:
+            row = response.data[0]
+            stats = {
+                "total_analyses": row.get("total_analyses", 0),
+                "ai_detected_count": row.get("ai_detected_count", 0),
+                "perplexity_sum": float(row.get("perplexity_sum", 0)),
+                "perplexity_sq_sum": float(row.get("perplexity_sq_sum", 0)),
+                "burstiness_sum": float(row.get("burstiness_sum", 0)),
+                "burstiness_sq_sum": float(row.get("burstiness_sq_sum", 0)),
+                "ttr_sum": float(row.get("ttr_sum", 0)),
+                "cv_sum": float(row.get("cv_sum", 0)),
+                "max_samples": row.get("max_samples", 200),
+                "samples": _json_mod.loads(row.get("samples_json", "[]")),
+                "threshold_adjustments": _json_mod.loads(
+                    row.get("threshold_adjustments_json", "{}")
+                ),
+            }
+            logger.info(
+                f"Learning stats loaded from DB: {stats['total_analyses']} analyses, "
+                f"{stats['ai_detected_count']} AI detected"
+            )
+            return stats
+    except Exception as e:
+        logger.warning(f"Could not load learning stats: {e}")
+    return None
 
 
 # ────────────────────────────────────────────
