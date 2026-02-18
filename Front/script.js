@@ -345,6 +345,40 @@ function ensureSplineLoaded() {
     splineLoaded = true;
 }
 
+// ═══════════════════════════════════════════
+// Reusable Inference Overlay (Spline animation)
+// ═══════════════════════════════════════════
+function showInferenceOverlay(title, subtitle) {
+    // Remove any existing overlay first
+    hideInferenceOverlay();
+    const overlay = document.createElement('div');
+    overlay.id = 'inferenceOverlay';
+    overlay.className = 'inference-overlay';
+    overlay.innerHTML = `
+        <div class="inference-overlay-card">
+            <div class="inference-spline-shell">
+                <iframe src="https://my.spline.design/dunes-e5udKuZ4pYQhrEugeAVGiDkE/" loading="eager" style="border:none;width:100%;height:100%;display:block;"></iframe>
+            </div>
+            <div class="loader-copy">
+                <p class="eyebrow">${title || 'Inference running'}</p>
+                <p class="loader-text">${subtitle || 'Processing your request...'}</p>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    // Trigger entrance animation
+    requestAnimationFrame(() => overlay.classList.add('visible'));
+}
+
+function hideInferenceOverlay() {
+    const overlay = document.getElementById('inferenceOverlay');
+    if (overlay) {
+        overlay.classList.remove('visible');
+        overlay.classList.add('exiting');
+        setTimeout(() => overlay.remove(), 300);
+    }
+}
+
 function showError(message) {
     ui.errorMessage.textContent = message;
     ui.errorCard.classList.remove('hidden');
@@ -1596,6 +1630,7 @@ async function runComparison() {
     const btn = document.getElementById('compareBtn');
     btn.disabled = true;
     btn.textContent = 'Comparing...';
+    showInferenceOverlay('Comparing texts', 'Analyzing sentence-level similarity and generating diff view...');
     resultsEl.classList.remove('hidden');
     statsGrid.innerHTML = '<p class="heatmap-placeholder">Analyzing texts…</p>';
     simBar.innerHTML = '';
@@ -1680,6 +1715,7 @@ async function runComparison() {
     } catch (err) {
         statsGrid.innerHTML = `<p class="heatmap-placeholder" style="color:var(--danger);">${err.message}</p>`;
     } finally {
+        hideInferenceOverlay();
         btn.disabled = false;
         btn.textContent = 'Compare Texts';
     }
@@ -1897,6 +1933,7 @@ async function runBatchAnalysis() {
 
     btn.disabled = true;
     btn.textContent = 'Analyzing files...';
+    showInferenceOverlay('Batch analysis running', `Evaluating ${batchFiles.length} files — perplexity, burstiness, and cross-similarity...`);
     resultsSection.classList.remove('hidden');
     summaryGrid.innerHTML = '<p class="heatmap-placeholder">Processing batch…</p>';
     tableWrap.innerHTML = '';
@@ -1976,6 +2013,7 @@ async function runBatchAnalysis() {
     } catch (err) {
         summaryGrid.innerHTML = `<p class="heatmap-placeholder" style="color:var(--danger);">${err.message}</p>`;
     } finally {
+        hideInferenceOverlay();
         btn.disabled = false;
         btn.textContent = 'Analyze All Files';
     }
