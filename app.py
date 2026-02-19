@@ -17,6 +17,11 @@ import threading
 from dotenv import load_dotenv
 load_dotenv()
 
+# Optionally use Hugging Face Inference API instead of local model (reduces RAM usage)
+# Set USE_HF_INFERENCE=true and provide HF_TOKEN or HUGGINGFACE_HUB_TOKEN in env on Render
+import requests
+USE_HF_INFERENCE = os.environ.get('USE_HF_INFERENCE', 'true').lower() in ('1', 'true', 'yes')
+HF_API_TOKEN = os.environ.get('HF_TOKEN') or os.environ.get('HUGGINGFACE_HUB_TOKEN')
 # Default model name (override with MODEL_NAME env var).
 # Use a smaller model on low-memory hosts (Render free tier): distilgpt2
 MODEL_NAME = os.environ.get('MODEL_NAME', 'distilgpt2')
@@ -174,7 +179,27 @@ def load_models():
         try:
             logger.info("Loading ML models...")
 
-            # Import heavy libraries here
+            # If configured, skip local heavy model loading and use HF Inference API instead
+            if USE_HF_INFERENCE:
+                if not HF_API_TOKEN:
+                    logger.warning("USE_HF_INFERENCE is set but no HF token provided; falling back to local load")
+                else:
+                    # Download NLTK resources and cache stopwords still needed
+                    download_nltk_resources()
+                    _cache_stopwords()
+
+                    # We won't load transformers/torch locally to save memory
+                    transformers = None
+                    torch = None
+                    vectorizer = None
+                    tokenizer = None
+                    model = None
+                    models_loaded = True
+                    logger.info("Configured to use Hugging Face Inference API (no local model loaded)")
+                    return True
+
+            # Import heavy libraries here for local-mode
+            logger.info("Using local model mode: importing transformers/torch")
             import transformers as hf_transformers
             import torch as pt
             from sklearn.feature_extraction.text import TfidfVectorizer
@@ -213,7 +238,7 @@ def load_models():
                 model = None
 
             models_loaded = True
-            logger.info("Models loaded successfully")
+            logger.info("Models loaded successfully (local)")
             return True
 
         except Exception as e:
@@ -246,6 +271,37 @@ def _get_stopwords():
     if _stopwords_cache is None:
         _cache_stopwords()
     return _stopwords_cache if _stopwords_cache else set()
+
+
+def hf_generate(prompt, max_new_tokens=32, temperature=0.7):
+    """Generate continuation using Hugging Face Inference API.
+
+    Returns generated text or None on failure. Requires `HF_API_TOKEN` and `USE_HF_INFERENCE`.
+    """
+    if not USE_HF_INFERENCE or not HF_API_TOKEN:
+        return None
+
+    api_url = f"https://api-inference.huggingface.co/models/{MODEL_NAME}"
+    headers = {"Authorization": f"Bearer {HF_API_TOKEN}", "Accept": "application/json"}
+    payload = {
+        "inputs": prompt,
+        "options": {"wait_for_model": True},
+        "parameters": {"max_new_tokens": max_new_tokens, "temperature": temperature}
+    }
+    try:
+        res = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        if res.status_code == 200:
+            data = res.json()
+            # HF returns list of generated sequences or dict depending on model
+            if isinstance(data, list) and data:
+                return data[0].get('generated_text') or data[0].get('text')
+            if isinstance(data, dict):
+                return data.get('generated_text') or data.get('text')
+        else:
+            logger.warning(f"HF generate failed: {res.status_code} {res.text}")
+    except Exception as e:
+        logger.warning(f"HF generate exception: {e}")
+    return None
 
 def preprocess_text(text):
     """Preprocess text with robust error handling using cached stopwords."""
