@@ -52,7 +52,11 @@ let lastAnalysisId = null;
 function getSessionId() {
     let sid = localStorage.getItem('plagiarism_session_id');
     if (!sid) {
-        sid = 'sess_' + crypto.randomUUID();
+        // Fallback for older browsers / non-HTTPS contexts
+        const uuid = (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : 'xxxx-xxxx-xxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16));
+        sid = 'sess_' + uuid;
         localStorage.setItem('plagiarism_session_id', sid);
     }
     return sid;
@@ -130,7 +134,7 @@ function updateAuthUI() {
 async function verifyAuth() {
     if (!authToken) return;
     try {
-        const resp = await fetch('${API_BASE}/auth/me', {
+        const resp = await fetch(`${API_BASE}/auth/me`, {
             headers: { 'Authorization': `Bearer ${authToken}` }
         });
         if (!resp.ok) {
@@ -223,7 +227,7 @@ async function handleLogin(e) {
     btn.textContent = 'Signing in...';
 
     try {
-        const resp = await fetch('${API_BASE}/auth/login', {
+        const resp = await fetch(`${API_BASE}/auth/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password }),
@@ -263,7 +267,7 @@ async function handleSignup(e) {
     btn.textContent = 'Creating account...';
 
     try {
-        const resp = await fetch('${API_BASE}/auth/signup', {
+        const resp = await fetch(`${API_BASE}/auth/signup`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password, full_name: fullName }),
@@ -297,7 +301,7 @@ async function handleSignup(e) {
 
 async function handleLogout() {
     try {
-        await fetch('${API_BASE}/auth/logout', {
+        await fetch(`${API_BASE}/auth/logout`, {
             method: 'POST',
             headers: getAuthHeaders(),
         });
@@ -415,7 +419,7 @@ async function checkPlagiarism() {
             formData.append('file', file);
             ui.uploadStatus.textContent = 'Uploading file…';
 
-            const response = await fetchWithRetry('${API_BASE}/upload', {
+            const response = await fetchWithRetry(`${API_BASE}/upload`, {
                 method: 'POST',
                 body: formData,
                 mode: 'cors'
@@ -443,10 +447,16 @@ async function checkPlagiarism() {
 
         setLoading(true);
 
-        const [plagiarismResult, streamlitResult] = await Promise.all([
-            fetchAnalysis('${API_BASE}/check', payload),
-            fetchAnalysis('${API_BASE}/streamlit-analysis', payload)
+        const [checkResult, streamlitSettled] = await Promise.allSettled([
+            fetchAnalysis(`${API_BASE}/check`, payload),
+            fetchAnalysis(`${API_BASE}/streamlit-analysis`, payload)
         ]);
+
+        if (checkResult.status === 'rejected') {
+            throw checkResult.reason || new Error('Analysis failed');
+        }
+        const plagiarismResult = checkResult.value;
+        const streamlitResult = streamlitSettled.status === 'fulfilled' ? streamlitSettled.value : {};
 
         const combined = { ...plagiarismResult, streamlit: streamlitResult };
         lastAnalyzedText = payload.text;
@@ -508,8 +518,6 @@ function clamp(val, min, max) {
 }
 
 function computeProbabilities(result) {
-    console.log('[DEBUG] /check result:', JSON.stringify(result, null, 2));
-
     // 1. Try backend signal score (0-1)
     const signalScore = result.analysis?.signals?.score;
     // 2. Try explicit AI probability fields
@@ -543,7 +551,6 @@ function computeProbabilities(result) {
     if (confidenceRaw >= 0 && confidenceRaw <= 1) confidenceRaw = confidenceRaw * 100;
     const confidence = clamp(Math.round(confidenceRaw), 0, 100);
 
-    console.log('[DEBUG] computed:', { signalScore, aiProbability, humanProbability, confidence });
     return { aiProbability, humanProbability, confidence };
 }
 
@@ -1300,7 +1307,7 @@ async function renderHeatmap(text) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
 
-        const response = await fetch('${API_BASE}/sentence-analysis', {
+        const response = await fetch(`${API_BASE}/sentence-analysis`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
             body: JSON.stringify({ text }),
@@ -1542,7 +1549,7 @@ async function shareReport(analysisId) {
         return;
     }
     try {
-        const response = await fetch('${API_BASE}/report', {
+        const response = await fetch(`${API_BASE}/report`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ analysis_id: analysisId }),
@@ -1600,7 +1607,7 @@ async function uploadFileForCompare(fileInput, textArea, statusEl) {
     try {
         const formData = new FormData();
         formData.append('file', file);
-        const resp = await fetchWithRetry('${API_BASE}/upload', {
+        const resp = await fetchWithRetry(`${API_BASE}/upload`, {
             method: 'POST', body: formData, mode: 'cors'
         });
         const data = await resp.json();
@@ -1642,7 +1649,7 @@ async function runComparison() {
     diffView.innerHTML = '';
 
     try {
-        const resp = await fetchWithRetry('${API_BASE}/compare', {
+        const resp = await fetchWithRetry(`${API_BASE}/compare`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text1, text2 }),
@@ -1737,7 +1744,7 @@ async function runCrossDocCheck(text, excludeId) {
     container.innerHTML = '<p class="heatmap-placeholder">Checking for similar documents…</p>';
 
     try {
-        const resp = await fetchWithRetry('${API_BASE}/cross-check', {
+        const resp = await fetchWithRetry(`${API_BASE}/cross-check`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ text, threshold: 0.3, exclude_id: excludeId }),
@@ -1811,7 +1818,7 @@ async function submitFeedback(isCorrect) {
     incorrectBtn.disabled = true;
 
     try {
-        const resp = await fetch('${API_BASE}/feedback', {
+        const resp = await fetch(`${API_BASE}/feedback`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({
@@ -1846,7 +1853,7 @@ async function submitFeedback(isCorrect) {
 
 async function loadTrustScore() {
     try {
-        const resp = await fetch('${API_BASE}/feedback/stats');
+        const resp = await fetch(`${API_BASE}/feedback/stats`);
         const data = await resp.json();
         const trustEl = document.getElementById('feedbackTrust');
         if (trustEl && data.total_feedback > 0) {
@@ -1949,7 +1956,7 @@ async function runBatchAnalysis() {
         const formData = new FormData();
         batchFiles.forEach(f => formData.append('files', f));
 
-        const resp = await fetchWithRetry('${API_BASE}/batch-analyze', {
+        const resp = await fetchWithRetry(`${API_BASE}/batch-analyze`, {
             method: 'POST', body: formData, mode: 'cors'
         });
         const data = await resp.json();

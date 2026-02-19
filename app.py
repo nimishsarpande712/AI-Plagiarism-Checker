@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import os
 import logging
+import uuid
+import time
 import PyPDF2
 from io import BytesIO
 import docx
@@ -10,7 +12,6 @@ import numpy as np
 import warnings
 import string
 import threading
-import time
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -22,7 +23,6 @@ import database as db
 # Heavy imports - these will be imported when models are loaded
 transformers = None
 torch = None
-sklearn = None
 # Import nltk at the top level since we need it for initialization
 import nltk
 
@@ -98,11 +98,20 @@ nltk.data.path.append(nltk_data_dir)
 
 # Initialize Flask app first before downloading resources
 app = Flask(__name__, static_folder='Front')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(32).hex())
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 10 * 1024 * 1024))  # 10 MB default
 
-# Enhanced CORS configuration
+# ─── CORS Configuration ───
+# In production, set ALLOWED_ORIGINS env var to your frontend domain(s), comma-separated.
+# Example: ALLOWED_ORIGINS=https://your-app.vercel.app,https://custom-domain.com
+_allowed_origins = [o.strip() for o in os.environ.get('ALLOWED_ORIGINS', '').split(',') if o.strip()]
+if not _allowed_origins:
+    _allowed_origins = ['http://localhost:8000', 'http://127.0.0.1:8000',
+                        'http://localhost:5000', 'http://127.0.0.1:5000']
+
 CORS(app, resources={
     r"/*": {
-        "origins": ["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:5000", "http://127.0.0.1:5000"],
+        "origins": _allowed_origins,
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With", "X-Session-Id"],
         "expose_headers": ["Content-Type", "Authorization"],
@@ -114,7 +123,7 @@ CORS(app, resources={
 @app.after_request
 def after_request(response):
     origin = request.headers.get('Origin')
-    if origin in ['http://localhost:8000', 'http://127.0.0.1:8000', 'http://localhost:5000', 'http://127.0.0.1:5000']:
+    if origin in _allowed_origins:
         response.headers['Access-Control-Allow-Origin'] = origin
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,Accept,Origin,X-Requested-With,X-Session-Id'
     response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
@@ -200,10 +209,10 @@ def load_models():
 
         except Exception as e:
             logger.error(f"Error loading models: {e}")
-            models_loaded = True
+            # Leave models_loaded = False so we can retry
             tokenizer = None
             model = None
-            return True
+            return False
         finally:
             _models_loading = False
 
@@ -664,85 +673,6 @@ def get_learning_stats():
         }
 
 
-def check_plagiarism(text1, text2):
-    """Enhanced plagiarism detection"""
-    try:
-        # Ensure models are loaded
-        if not load_models():
-            logger.error("Failed to load models for plagiarism check")
-            return 0, []
-            
-        from nltk.tokenize import sent_tokenize
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
-        import nltk
-        
-        # Get sentence pairs from original texts (not preprocessed)
-        sentences1 = sent_tokenize(text1)
-        sentences2 = sent_tokenize(text2)
-        
-        if not sentences1 or not sentences2:
-            return 0, []
-        
-        # Use a local vectorizer to avoid contaminating the global one
-        local_vec = TfidfVectorizer(
-            max_features=5000,
-            strip_accents='unicode',
-            ngram_range=(1, 2),
-            stop_words='english'
-        )
-            
-        # Calculate similarity matrix
-        similarity_matrix = []
-        similar_sentences = []
-        
-        for sent1 in sentences1:
-            sent_similarities = []
-            for sent2 in sentences2:
-                # TF-IDF cosine similarity
-                try:
-                    vectors = local_vec.fit_transform([sent1, sent2])
-                    tfidf_sim = sklearn_cosine(vectors[0:1], vectors[1:2])[0][0]
-                except Exception:
-                    tfidf_sim = 0.0
-                
-                # N-gram overlap (Jaccard on trigrams)
-                n = 3
-                words1 = sent1.lower().split()
-                words2 = sent2.lower().split()
-                sent1_ngrams = set(nltk.ngrams(words1, n)) if len(words1) >= n else set()
-                sent2_ngrams = set(nltk.ngrams(words2, n)) if len(words2) >= n else set()
-                
-                if sent1_ngrams and sent2_ngrams:
-                    ngram_sim = len(sent1_ngrams & sent2_ngrams) / len(sent1_ngrams | sent2_ngrams)
-                else:
-                    ngram_sim = 0.0
-                    
-                # Combined similarity (weighted average)
-                similarity = 0.6 * tfidf_sim + 0.4 * ngram_sim
-                sent_similarities.append(similarity)
-                
-                if similarity > 0.5:
-                    similar_sentences.append({
-                        'text': sent1,
-                        'similarity': round(similarity * 100, 2)
-                    })
-                    
-            similarity_matrix.append(sent_similarities)
-            
-        # Calculate overall similarity
-        if similarity_matrix:
-            max_similarities = [max(row) for row in similarity_matrix]
-            overall_similarity = (sum(max_similarities) / len(max_similarities)) * 100
-        else:
-            overall_similarity = 0
-            
-        return overall_similarity, similar_sentences
-        
-    except Exception as e:
-        logger.error(f"Error in plagiarism check: {e}")
-        return 0, []
-
 @app.route('/check', methods=['POST', 'OPTIONS'])
 def check():
     """Enhanced analysis endpoint"""
@@ -767,8 +697,7 @@ def check():
         if len(text) < 50:  # Minimum length requirement
             return jsonify({"error": "Text too short for analysis"}), 400
 
-        import time as _time
-        start_time = _time.time()
+        start_time = time.time()
 
         # Get metrics
         perplexity, burstiness = get_perplexity_and_burstiness(text)
@@ -799,7 +728,7 @@ def check():
         else:
             entropy = 0.0
 
-        inference_time = _time.time() - start_time
+        inference_time = time.time() - start_time
         
         # Voice consistency analysis (passive vs active)
         voice_analysis = analyze_voice_consistency(text)
@@ -835,8 +764,7 @@ def check():
             logger.warning(f"Learning update failed (non-critical): {learn_err}")
 
         # Generate a local analysis ID upfront so frontend always has one
-        import uuid as _uuid_mod
-        local_analysis_id = str(_uuid_mod.uuid4())
+        local_analysis_id = str(uuid.uuid4())
         result_payload["analysis_id"] = local_analysis_id
 
         # Save to database (non-blocking, best-effort)
@@ -916,9 +844,6 @@ def upload():
         
     try:
         logger.info("Upload endpoint called")
-        logger.info(f"Request method: {request.method}")
-        logger.info(f"Content type: {request.content_type}")
-        logger.info(f"Files in request: {list(request.files.keys())}")
         
         if 'file' not in request.files:
             logger.error("No file in request.files")
@@ -973,32 +898,6 @@ def upload():
     except Exception as e:
         logger.error(f"Error processing file: {e}", exc_info=True)
         return jsonify({"error": f"Error processing file: {str(e)}"}), 500
-
-@app.route('/analysis', methods=['POST', 'OPTIONS'])
-def analysis():
-    if request.method == 'OPTIONS':
-        response = jsonify({})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-        response.headers.add('Access-Control-Allow-Methods', 'POST')
-        return response
-        
-    try:
-        data = request.get_json()
-        if not data or 'text' not in data:
-            return jsonify({"error": "No text provided"}), 400
-
-        text = data['text']
-        perplexity, burstiness = get_perplexity_and_burstiness(text)
-        
-        return jsonify({
-            "perplexity": float(perplexity),
-            "burstiness": float(burstiness),
-            "status": "success"
-        })
-    except Exception as e:
-        logger.error(f"Analysis error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
 
 @app.route('/streamlit-analysis', methods=['POST', 'OPTIONS'])
 def streamlit_analysis():
@@ -1359,7 +1258,6 @@ def sentence_analysis():
             return jsonify({"error": "Models not loaded"}), 500
 
         from nltk.tokenize import sent_tokenize
-        import time as _time
 
         all_sentences = [s.strip() for s in sent_tokenize(text) if s.strip()]
 
@@ -1373,14 +1271,12 @@ def sentence_analysis():
 
         results = []
         MAX_TIME = 45  # Maximum processing time in seconds
-        start_time = _time.time()
+        start_time = time.time()
 
         if tokenizer is not None and model is not None:
-            import torch as _torch
-
             for sent in sentences:
                 # Check time budget
-                elapsed = _time.time() - start_time
+                elapsed = time.time() - start_time
                 if elapsed > MAX_TIME:
                     # Time budget exhausted — use fast heuristic for remaining sentences
                     logger.info(f"Sentence analysis time budget reached after {len(results)} sentences ({elapsed:.1f}s)")
@@ -1397,7 +1293,7 @@ def sentence_analysis():
                         results.append({"text": sent, "probability": 0.30, "perplexity": None})
                         continue
 
-                    with _torch.no_grad():
+                    with torch.no_grad():
                         outputs = model(input_ids, labels=input_ids)
                         loss = outputs.loss.item()
 
@@ -1949,8 +1845,7 @@ def batch_analyze():
         if not load_models():
             return jsonify({"error": "Models not loaded"}), 500
 
-        import time as _time
-        batch_start = _time.time()
+        batch_start = time.time()
 
         # Analyze each text individually
         individual_results = []
@@ -2025,7 +1920,7 @@ def batch_analyze():
                     })
         suspicious_pairs.sort(key=lambda x: x['similarity'], reverse=True)
 
-        batch_time = _time.time() - batch_start
+        batch_time = time.time() - batch_start
 
         # Summary statistics
         ai_count = sum(1 for r in individual_results if r.get('is_ai_generated'))
@@ -2054,19 +1949,21 @@ def batch_analyze():
 
 if __name__ == '__main__':
     try:
-        # Ensure all models are loaded before starting server
         logger.info("Starting Flask server...")
 
         # Restore learning stats from Supabase (production persistence)
         _load_learning_from_db()
 
         logger.info("Models loaded and ready")
-        
+
+        port = int(os.environ.get('PORT', 5000))
+        debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+
         # Start the Flask application
         app.run(
             host='0.0.0.0',
-            port=5000,
-            debug=True,
+            port=port,
+            debug=debug,
             threaded=True,
             use_reloader=False  # Disable reloader to prevent model reloading
         )

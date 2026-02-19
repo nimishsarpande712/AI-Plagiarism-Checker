@@ -5,6 +5,8 @@ generating shareable reports, and tracking usage.
 """
 
 import os
+import json
+import math
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -612,7 +614,6 @@ def get_feedback_stats() -> dict:
         # Trust score: weighted by recency (more recent feedback counts more)
         # Simple approach: overall accuracy with confidence interval
         # Wilson score lower bound for 95% confidence
-        import math
         z = 1.96  # 95% confidence
         p_hat = correct / max(total, 1)
         denominator = 1 + z * z / total
@@ -636,8 +637,6 @@ def get_feedback_stats() -> dict:
 # ────────────────────────────────────────────
 # Persistent Model Learning Stats
 # ────────────────────────────────────────────
-
-import json as _json_mod
 
 
 @db_safe(default=None)
@@ -669,8 +668,8 @@ def save_learning_stats(stats_dict: dict) -> dict:
         "ttr_sum": stats_dict.get("ttr_sum", 0.0),
         "cv_sum": stats_dict.get("cv_sum", 0.0),
         "max_samples": stats_dict.get("max_samples", 200),
-        "samples_json": _json_mod.dumps(stats_dict.get("samples", [])[-200:]),
-        "threshold_adjustments_json": _json_mod.dumps(stats_dict.get("threshold_adjustments", {})),
+        "samples_json": json.dumps(stats_dict.get("samples", [])[-200:]),
+        "threshold_adjustments_json": json.dumps(stats_dict.get("threshold_adjustments", {})),
     }
 
     try:
@@ -718,8 +717,8 @@ def load_learning_stats() -> dict:
                 "ttr_sum": float(row.get("ttr_sum", 0)),
                 "cv_sum": float(row.get("cv_sum", 0)),
                 "max_samples": row.get("max_samples", 200),
-                "samples": _json_mod.loads(row.get("samples_json", "[]")),
-                "threshold_adjustments": _json_mod.loads(
+                "samples": json.loads(row.get("samples_json", "[]")),
+                "threshold_adjustments": json.loads(
                     row.get("threshold_adjustments_json", "{}")
                 ),
             }
@@ -731,39 +730,3 @@ def load_learning_stats() -> dict:
     except Exception as e:
         logger.warning(f"Could not load learning stats: {e}")
     return None
-
-
-# ────────────────────────────────────────────
-# Batch Analysis
-# ────────────────────────────────────────────
-
-@db_safe(default=None)
-def create_batch(name: str, file_count: int, user_id: str = None,
-                 session_id: str = None) -> dict:
-    """Create a batch analysis group.
-
-    Returns the inserted batch row with its ID.
-    """
-    client = _get_client()
-    if not client:
-        return None
-
-    batch_id = uuid.uuid4().hex[:16]
-    row = {
-        "batch_id": batch_id,
-        "name": name,
-        "file_count": file_count,
-        "user_id": user_id,
-        "session_id": session_id,
-        "status": "pending",
-    }
-
-    try:
-        response = client.table("batches").insert(row).execute()
-        if response.data:
-            logger.info(f"Batch created: {batch_id} with {file_count} files")
-            return response.data[0]
-    except Exception as e:
-        logger.warning(f"Batches table may not exist: {e}. Using in-memory batch.")
-    # Fallback: return virtual batch
-    return {"batch_id": batch_id, "name": name, "file_count": file_count, "status": "pending"}
