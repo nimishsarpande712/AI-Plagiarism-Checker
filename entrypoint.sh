@@ -14,7 +14,7 @@ from pathlib import Path
 try:
     cache_dir = Path(os.environ.get('HF_HOME', '/app/.hf_cache'))
     cache_dir.mkdir(parents=True, exist_ok=True)
-    model_name = os.environ.get('MODEL_NAME', 'gpt2')
+    model_name = os.environ.get('MODEL_NAME', 'distilgpt2')
     print('Prefetching model', model_name, 'into', cache_dir)
     # Ensure transformers sees the cache dir
     os.environ['HF_HOME'] = str(cache_dir)

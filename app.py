@@ -17,6 +17,10 @@ import threading
 from dotenv import load_dotenv
 load_dotenv()
 
+# Default model name (override with MODEL_NAME env var).
+# Use a smaller model on low-memory hosts (Render free tier): distilgpt2
+MODEL_NAME = os.environ.get('MODEL_NAME', 'distilgpt2')
+
 # Database module
 import database as db
 
