@@ -1,170 +1,185 @@
-# AI & Plagiarism Detector
+# AI Plagiarism Engine
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A sophisticated web application designed to analyze text for potential AI generation and plagiarism. This tool provides detailed metrics and a clear verdict, making it useful for educators, writers, and content creators.
-
-
-
+A production-ready web application that detects AI-generated text and checks plagiarism using GPT-2 perplexity analysis, burstiness scoring, and TF-IDF similarity. Built for educators, writers, and content creators.
 
 ---
 
 ## ✨ Features
 
-- **Advanced AI Text Detection**: Utilizes a multi-faceted approach to distinguish between human-written and AI-generated content.
-- **Dual-Metric Analysis**: Core detection is based on **Perplexity** (predictability of text) and **Burstiness** (variation in sentence structure).
-- **Heuristic Signal Processing**: Goes beyond basic metrics to analyze:
-    - Vocabulary Diversity (Type-Token Ratio)
-    - Sentence Length Variability
-    - Repetition of Common Words
-    - Punctuation Patterns
-    - Repetitive N-grams
-- **File Upload Capability**: Analyze content directly from `.pdf`, `.docx`, and `.txt` files.
-- **Plagiarism Checking**: Compares text against another source using TF-IDF and n-gram overlap to detect similar sentences.
-- **Detailed Analytics**: Provides a suite of metrics for in-depth analysis:
-    - **Style Consistency**: Measures if the writing style is consistent throughout the text.
-    - **Complexity**: Estimates the complexity of the text based on sentence length and word rarity.
-    - **Variability**: Assesses the diversity of words and sentence structures.
-- **Clear & Concise UI**: A clean, user-friendly interface for easy text input, file uploading, and results visualization.
-- **RESTful API**: A Flask-based backend that exposes endpoints for analysis, which can be integrated into other services.
+### Core Analysis
+- **AI Text Detection** — Multi-signal engine combining GPT-2 perplexity, burstiness, vocabulary diversity, sentence variability, repetition patterns, and passive voice ratio
+- **Plagiarism Checking** — TF-IDF cosine similarity + n-gram overlap between two texts with sentence-level match highlighting
+- **File Upload** — Analyze `.pdf`, `.docx`, and `.txt` files directly
+- **Sentence-Level Breakdown** — Per-sentence AI probability with perplexity scores
+
+### Advanced Features
+- **Cross-Document Analysis** — Compare multiple documents for mutual similarity
+- **Batch Analysis** — Upload and analyze multiple files at once
+- **Document Compare** — Side-by-side diff view between two texts
+- **Feedback System** — Users can flag incorrect results; model adapts via persistent learning
+- **Adaptive Learning** — Thresholds auto-adjust based on accumulated feedback stored in Supabase
+- **Shareable Reports** — Generate unique report links with view tracking
+
+### Analytics & Visualization
+- **Interactive Charts** — Plotly.js graphs for perplexity distribution, word frequency, and style metrics
+- **Style Consistency** — Measures writing style uniformity throughout the text
+- **Complexity Score** — Estimates text complexity from sentence length and word rarity
+- **Trust Score** — Wilson-score confidence interval based on user feedback accuracy
 
 ---
 
 ## ⚙️ How It Works
 
-The application combines established NLP techniques with a multi-signal heuristic engine to provide a robust analysis.
-
 ### AI Detection Engine
 
-The core of the AI detection lies in its ability to spot the subtle, non-human patterns in text.
-
-1.  **Model Loading**: To ensure a fast startup, heavy machine learning models (like GPT-2 from Hugging Face Transformers) are **lazy-loaded** on the first analysis request.
-2.  **Perplexity Calculation**: The system uses a pre-trained `gpt2` model to calculate the perplexity of the text. A low perplexity score suggests the text is predictable and likely AI-generated. A fallback unigram model is used if the transformer model fails.
-3.  **Burstiness Score**: It analyzes the variation in sentence lengths and word frequency. Human writing tends to have higher "burstiness" (a mix of long and short sentences), while AI text is often more uniform.
-4.  **Heuristic Analysis**: Several other signals are computed:
-    - **Low Vocabulary Diversity**: AIs often reuse a limited set of words.
-    - **Low Sentence Variability**: AI sentences can be monotonous in length.
-    - **High Repetition**: Overuse of certain words or phrases.
-5.  **Final Verdict**: A weighted score is calculated from all these signals. The application only flags text as "AI-generated" if multiple strong signals are present and the text is of sufficient length (min. 120 tokens), minimizing false positives.
+1. **Model Loading** — GPT-2 and NLTK models are lazy-loaded on first request to keep startup fast
+2. **Perplexity** — Measures how "surprised" GPT-2 is by the text. Low perplexity = predictable = likely AI-generated. Falls back to a unigram model if transformers fail
+3. **Burstiness** — Analyzes sentence-length variation. Humans write with mixed long/short sentences; AI tends to be uniform
+4. **Heuristic Signals** — Vocabulary diversity (TTR), sentence variability, word repetition, punctuation patterns, passive voice ratio, n-gram repetition
+5. **Weighted Verdict** — All signals are combined with contribution weights. Text must be ≥120 tokens and multiple strong signals must agree before flagging as AI-generated
 
 ### Plagiarism Checker
 
-The plagiarism detection module identifies similarities between two pieces of text.
-
-1.  **Preprocessing**: Text is cleaned, tokenized, and stopwords are removed.
-2.  **Sentence Similarity**: Each sentence from the source text is compared against every sentence in the target text.
-3.  **Hybrid Scoring**: Similarity is calculated using a combination of:
-    - **TF-IDF Cosine Similarity**: To measure semantic similarity.
-    - **N-gram Overlap**: To catch exact phrase matches.
-4.  **Overall Score**: The final plagiarism score is an aggregation of the highest similarity scores for each sentence.
+1. **Preprocessing** — Text is cleaned, tokenized, and stopwords are removed
+2. **Hybrid Scoring** — Each sentence is scored using TF-IDF cosine similarity (60%) + trigram Jaccard overlap (40%)
+3. **Aggregation** — Overall score is the mean of per-sentence max similarities
 
 ---
 
 ## 🛠️ Tech Stack
 
--   **Backend**:
-    -   **Framework**: Flask
-    -   **ML/NLP**: `Transformers (Hugging Face)`, `PyTorch`, `NLTK`, `Scikit-learn`
-    -   **File Handling**: `PyPDF2`, `python-docx`
-    -   **Server**: Gunicorn (recommended for production)
-
--   **Frontend**:
-    -   HTML5
-    -   CSS3
-    -   Vanilla JavaScript (with asynchronous `fetch` for API calls)
-
--   **Python Version**: 3.8+
+| Layer | Technology |
+|---|---|
+| **Backend** | Flask, Gunicorn |
+| **ML/NLP** | PyTorch, Transformers (GPT-2), NLTK, Scikit-learn |
+| **Database** | Supabase (PostgreSQL) |
+| **Frontend** | Vanilla JS, Plotly.js, CSS3 |
+| **File Parsing** | PyPDF2, python-docx |
+| **Hosting** | Render (backend), Vercel (frontend) |
 
 ---
 
-## 🚀 Setup and Installation
+## 🚀 Setup
 
-Follow these steps to get the project running on your local machine.
+### Prerequisites
 
-### 1. Prerequisites
+- Python 3.8+
+- A [Supabase](https://supabase.com) project (free tier works)
 
--   **Python**: Ensure you have Python 3.8 or newer installed. You can check by running `python --version`.
--   **pip**: The Python package installer is required.
-
-### 2. Clone the Repository
+### Local Development
 
 ```bash
-git clone <repository-url>
-cd <repository-folder>
-```
+# Clone
+git clone https://github.com/nimishsarpande712/AI-Plagiarism-Checker.git
+cd AI-Plagiarism-Checker
 
-### 3. Install Dependencies
+# Virtual environment
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# macOS/Linux:
+source venv/bin/activate
 
-This project uses a `requirements.txt` file to manage its Python dependencies.
-
-```bash
+# Install dependencies
 pip install -r requirements.txt
-```
 
-The first time you run the application, it will automatically download the necessary `nltk` data models (`punkt`, `stopwords`, etc.).
+# Configure environment
+cp .env.example .env
+# Edit .env with your Supabase URL and key
 
-### 4. Run the Application
-
-The application consists of two parts: the Flask backend and the frontend server. The provided `setup_and_run.bat` script automates this for Windows.
-
-**On Windows:**
-
-Simply double-click the `setup_and_run.bat` file. It will:
-1.  Install all dependencies.
-2.  Start the Flask backend server.
-3.  Start the frontend server.
-
-**Manual Steps (for all Operating Systems):**
-
-You need to run two separate commands in two separate terminals.
-
-**Terminal 1: Start the Backend (Flask)**
-
-```bash
+# Start backend (http://localhost:5000)
 python app.py
-```
 
-This will start the backend server, typically on `http://localhost:5000`.
-
-**Terminal 2: Start the Frontend (HTTP Server)**
-
-```bash
+# In a new terminal — start frontend (http://localhost:8000)
 cd Front
 python -m http.server 8000
 ```
 
-This will serve the frontend files on `http://localhost:8000`.
+Open **http://localhost:8000** in your browser.
 
-### 5. Access the Application
+---
 
-Open your web browser and navigate to:
+## 🌐 Deployment
 
-**[http://localhost:8000](http://localhost:8000)**
+### Backend → Render
+
+1. Push repo to GitHub
+2. Go to [render.com](https://render.com) → **New** → **Web Service** → connect your repo
+3. Render auto-detects `render.yaml` — accept defaults
+4. Set environment variables in the dashboard:
+
+   | Variable | Value |
+   |---|---|
+   | `SUPABASE_URL` | Your Supabase project URL |
+   | `SUPABASE_KEY` | Your Supabase anon key |
+   | `ALLOWED_ORIGINS` | Your Vercel frontend URL (e.g. `https://your-app.vercel.app`) |
+
+5. Deploy — copy your Render URL (e.g. `https://ai-plagiarism-checker-xxxx.onrender.com`)
+
+### Frontend → Vercel
+
+1. Go to [vercel.com](https://vercel.com) → **Add New Project** → import your repo
+2. Set **Root Directory** to `Front`
+3. Set **Framework Preset** to `Other`
+4. Leave build command blank, set output directory to `.`
+5. Deploy — copy your Vercel URL
+
+### Connect Them
+
+1. In `Front/index.html`, update the API base URL:
+   ```html
+   <script>window.__API_BASE__ = "https://ai-plagiarism-checker-xxxx.onrender.com";</script>
+   ```
+2. In Render dashboard, set `ALLOWED_ORIGINS` to your Vercel URL
+3. Commit & push — Vercel auto-redeploys
+
+> **Note:** Render free tier sleeps after 15 min of inactivity. First request after sleep takes ~30-60s. Paid tier ($7/mo) keeps it always-on.
 
 ---
 
 ## 🔌 API Endpoints
 
-The Flask backend provides several API endpoints for text analysis.
-
--   `POST /check`: The main endpoint for full analysis. Takes a JSON with `{"text": "..."}` and returns perplexity, burstiness, AI likelihood, and other metrics.
--   `POST /upload`: Handles file uploads (`.pdf`, `.docx`, `.txt`). Extracts text and returns it in a JSON response.
--   `POST /analysis`: A simplified endpoint that returns just perplexity and burstiness.
--   `POST /streamlit-analysis`: Returns data formatted for visualization, including word frequency counts.
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/check` | Full AI detection analysis — returns perplexity, burstiness, AI probability, signals, and verdict |
+| `POST` | `/upload` | Extract text from uploaded `.pdf`, `.docx`, or `.txt` file |
+| `POST` | `/streamlit-analysis` | Returns perplexity, burstiness, and word frequency data for visualization |
+| `POST` | `/sentence-analysis` | Per-sentence AI probability breakdown |
+| `POST` | `/cross-document` | Compare multiple documents for mutual similarity |
+| `POST` | `/batch-analyze` | Analyze multiple files in one request |
+| `POST` | `/compare-texts` | Side-by-side diff between two texts |
+| `POST` | `/feedback` | Submit user feedback on analysis accuracy |
+| `GET` | `/feedback-stats` | Retrieve feedback accuracy and trust score |
+| `POST` | `/reports` | Generate a shareable report link |
+| `GET` | `/reports/<token>` | Retrieve a shared report by token |
+| `GET` | `/health` | Health check — returns model status |
 
 ---
 
 ## 📂 Project Structure
 
 ```
-.
-├── Front/                # Contains all frontend files
-│   ├── index.html        # Main HTML file
-│   ├── styles.css        # CSS for styling
-│   └── script.js         # JavaScript for interactivity and API calls
-├── __pycache__/          # Python cache
-├── app.py                # The core Flask backend application
-├── requirements.txt      # List of Python dependencies
-├── setup_and_run.bat     # Automation script for Windows
-└── README.md             # This file
+AI-Plagiarism-Checker/
+├── app.py              # Flask backend — all API endpoints and ML logic
+├── database.py         # Supabase integration — analyses, reports, feedback, learning
+├── requirements.txt    # Python dependencies
+├── Procfile            # Gunicorn start command for Render
+├── render.yaml         # Render deployment blueprint
+├── .env.example        # Environment variable template
+├── LICENSE             # MIT License
+├── README.md           # This file
+└── Front/              # Frontend (deployed to Vercel)
+    ├── index.html      # Main HTML
+    ├── script.js       # All frontend logic — auth, analysis, compare, batch, charts
+    ├── styles.css      # Neo-brutalist UI styling
+    ├── vercel.json     # Vercel config — rewrites & security headers
+    └── assets/         # Static assets (favicon, images)
 ```
+
+---
+
+## 📄 License
+
+[MIT](LICENSE)
