@@ -275,8 +275,8 @@ def preprocess_text(text):
 def get_perplexity_and_burstiness(text):
     """Calculate perplexity using GPT-2 and burstiness from token frequency distribution."""
     try:
-        if not text or len(text.strip()) < 10:
-            raise ValueError("Text too short for analysis")
+        if not text or len(text.strip()) == 0:
+            raise ValueError("No text provided")
 
         # Ensure models are loaded
         if not load_models():
@@ -361,7 +361,15 @@ def get_perplexity_and_burstiness(text):
                 avg_neg_log_prob = -log_prob_sum / max(N, 1)
                 perplexity = float(np.exp(avg_neg_log_prob))
 
-        return float(perplexity), float(burstiness)
+        # Guard against NaN / Inf (e.g. single-token input for GPT-2)
+        perplexity = float(perplexity)
+        burstiness = float(burstiness)
+        if not np.isfinite(perplexity):
+            perplexity = 100.0
+        if not np.isfinite(burstiness):
+            burstiness = 0.0
+
+        return perplexity, burstiness
 
     except Exception as e:
         logger.error(f"Analysis error: {str(e)}")
@@ -694,8 +702,8 @@ def check():
             return jsonify({"error": "No text provided"}), 400
 
         text = data['text'].strip()
-        if len(text) < 50:  # Minimum length requirement
-            return jsonify({"error": "Text too short for analysis"}), 400
+        if not text:
+            return jsonify({"error": "No text provided"}), 400
 
         start_time = time.time()
 
@@ -1251,8 +1259,8 @@ def sentence_analysis():
             return jsonify({"error": "No text provided"}), 400
 
         text = data['text'].strip()
-        if len(text) < 20:
-            return jsonify({"error": "Text too short for sentence analysis"}), 400
+        if not text:
+            return jsonify({"error": "No text provided"}), 400
 
         if not load_models():
             return jsonify({"error": "Models not loaded"}), 500
@@ -1579,8 +1587,8 @@ def cross_check():
             return jsonify({"error": "No text provided"}), 400
 
         text = data['text'].strip()
-        if len(text) < 50:
-            return jsonify({"error": "Text too short for cross-document check"}), 400
+        if not text:
+            return jsonify({"error": "No text provided"}), 400
 
         threshold = float(data.get('threshold', 0.3))
         exclude_id = data.get('exclude_id')
@@ -1851,16 +1859,16 @@ def batch_analyze():
         individual_results = []
         for i, text in enumerate(texts):
             try:
-                if len(text.strip()) < 50:
+                if not text.strip():
                     individual_results.append({
                         "filename": filenames[i],
-                        "error": "Text too short",
+                        "error": "Empty file",
                         "perplexity": None,
                         "burstiness": None,
                         "is_ai_generated": None,
                         "ai_probability": None,
                         "confidence": None,
-                        "word_count": len(text.split()),
+                        "word_count": 0,
                     })
                     continue
 
