@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 set -o errexit
 
-# Install CPU-only PyTorch first (saves ~600MB vs full CUDA build)
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-# Install remaining dependencies
+# Install all dependencies (torch CPU-only is handled via --extra-index-url in requirements.txt)
 pip install -r requirements.txt
 
 python -c "

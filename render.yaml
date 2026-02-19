@@ -17,4 +17,4 @@ services:
       - key: FLASK_DEBUG
         value: "false"
       - key: MAX_CONTENT_MB
-        value: "10"
+        value: "50"

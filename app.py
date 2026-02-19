@@ -99,7 +99,7 @@ nltk.data.path.append(nltk_data_dir)
 # Initialize Flask app first before downloading resources
 app = Flask(__name__, static_folder='Front')
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(32).hex())
-app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 10 * 1024 * 1024))  # 10 MB default
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 50 * 1024 * 1024))  # 50 MB default
 
 # ─── CORS Configuration ───
 # In production, set ALLOWED_ORIGINS env var to your frontend domain(s), comma-separated.
@@ -119,6 +119,11 @@ CORS(app, resources={
         "max_age": 120
     }
 })
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    """Handle file/payload too large errors globally."""
+    return jsonify({"error": "File too large. Maximum upload size is 50 MB."}), 413
 
 @app.after_request
 def after_request(response):
@@ -692,8 +697,10 @@ def check():
         return response
         
     try:
-        # Rate limiting
-        client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        # Rate limiting — X-Forwarded-For may contain comma-separated IPs
+        # (e.g. "client, proxy1, proxy2"); take the first (real client) IP only
+        forwarded = request.headers.get('X-Forwarded-For', '')
+        client_ip = forwarded.split(',')[0].strip() if forwarded else request.remote_addr
         if db.is_rate_limited(client_ip):
             return jsonify({"error": "Rate limit exceeded. Please wait before trying again."}), 429
 
